@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Chess UltraBullet</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Duel mental en direct</p>
+        <h1>Chess UltraBullet</h1>
+      </div>
+      <div class="top-actions" aria-label="Commandes">
+        <button id="orientationBtn" class="button secondary" type="button">Inverser l'echiquier</button>
+        <button id="soundToggleBtn" class="button secondary" type="button" aria-pressed="true">Sons actives</button>
+        <button id="newGameBtn" class="button primary" type="button">Nouvelle partie</button>
+      </div>
+    </header>
+
+    <section class="live-strip" aria-live="polite">
+      <span id="connectionBadge" class="badge neutral">Connexion au serveur...</span>
+      <span id="roleBadge" class="badge neutral">Role en attente</span>
+      <span id="turnBadge" class="badge gold">Tour : Blancs</span>
+      <span id="playersBadge" class="badge neutral">Joueurs : 0/2</span>
+    </section>
+
+    <main class="arena-layout">
+      <section class="board-panel" aria-label="Echiquier Chess UltraBullet">
+        <div class="board-head">
+          <div>
+            <h2 id="boardTitle">Arene</h2>
+            <p id="shortStatus" class="short-status">Connexion au serveur...</p>
+          </div>
+        </div>
+
+        <div class="board-toolbar">
+          <label>Echiquier <input id="boardSizeInput" type="range" min="420" max="860" step="10" value="730"></label>
+          <label>Cases
+            <select id="boardThemeSelect">
+              <option value="classic">Classique</option>
+              <option value="emerald">Emeraude</option>
+              <option value="slate">Ardoise</option>
+              <option value="rosewood">Bois rose</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="board-stage">
+          <div id="clockPanel" class="clock-panel board-clock-panel" aria-label="Chronometre">
+            <div class="clock-row">
+              <div id="whiteClockBox" class="clock-box white-clock">
+                <span>Blancs</span>
+                <strong id="whiteClock">15.000</strong>
+                <i id="whiteClockGauge" class="clock-gauge" aria-hidden="true"></i>
+              </div>
+              <div id="blackClockBox" class="clock-box black-clock">
+                <span>Noirs</span>
+                <strong id="blackClock">15.000</strong>
+                <i id="blackClockGauge" class="clock-gauge" aria-hidden="true"></i>
+              </div>
+            </div>
+            <form id="clockForm" class="clock-form">
+              <label for="clockInput">Temps initial</label>
+              <input id="clockInput" type="number" min="1" max="600" step="1" value="15" inputmode="decimal">
+              <span>s</span>
+              <button class="button secondary" type="submit">Appliquer</button>
+            </form>
+          </div>
+
+          <div id="boardWrap" class="board-wrap">
+            <div id="board" class="chessboard" role="grid" aria-label="Echiquier"></div>
+            <div id="localDragGhost" class="local-drag-ghost" aria-hidden="true"></div>
+            <div id="confettiLayer" class="confetti-layer" aria-hidden="true"></div>
+            <div id="intentOverlay" class="intent-overlay" aria-hidden="true">
+              <svg id="trailSvg" class="trail-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
+                <defs>
+                  <filter id="softGlow">
+                    <feGaussianBlur stdDeviation="1.4" result="blur"></feGaussianBlur>
+                    <feMerge>
+                      <feMergeNode in="blur"></feMergeNode>
+                      <feMergeNode in="SourceGraphic"></feMergeNode>
+                    </feMerge>
+                  </filter>
+                </defs>
+              </svg>
+              <div id="remoteHalos" class="remote-layer"></div>
+              <div id="remoteGhosts" class="remote-layer"></div>
+              <div id="remoteCursors" class="remote-layer"></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="premoveList" class="premove-list" aria-live="polite"></div>
+        <div id="errorBox" class="error-box" role="status" aria-live="polite"></div>
+      </section>
+
+      <aside class="side-panel" aria-label="Statut de partie">
+        <section class="chat-card">
+          <div class="chat-head">
+            <h2>Chat</h2>
+            <span id="chatCount">0 message</span>
+          </div>
+          <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
+          <form id="chatForm" class="chat-form">
+            <input id="chatInput" type="text" maxlength="240" autocomplete="off" placeholder="Message a l'adversaire">
+            <button class="button primary" type="submit">Envoyer</button>
+          </form>
+        </section>
+
+        <section class="status-card">
+          <h2>Statut</h2>
+          <div class="status-grid">
+            <div>
+              <span class="status-label">Ton role</span>
+              <strong id="roleText">En attente</strong>
+            </div>
+            <div>
+              <span class="status-label">Connexion</span>
+              <strong id="connectionText">Connexion...</strong>
+            </div>
+            <div>
+              <span class="status-label">Blancs</span>
+              <strong id="whiteText">Absent</strong>
+            </div>
+            <div>
+              <span class="status-label">Noirs</span>
+              <strong id="blackText">Absent</strong>
+            </div>
+            <div>
+              <span class="status-label">Spectateurs</span>
+              <strong id="spectatorsText">0</strong>
+            </div>
+            <div>
+              <span class="status-label">Trait</span>
+              <strong id="turnText">Blancs</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="profile-card">
+          <h2>Presence</h2>
+          <div id="opponentCard" class="opponent-card">
+            <span id="opponentAvatar" class="avatar-bubble" data-avatar="empty">?</span>
+            <div>
+              <strong id="opponentTitle">Adversaire</strong>
+              <span id="opponentText">En attente</span>
+            </div>
+          </div>
+
+          <div class="avatar-board">
+            <div class="avatar-row">
+              <span id="whiteAvatar" class="avatar-bubble small" data-avatar="empty">?</span>
+              <div>
+                <strong id="whiteNameText">Blancs</strong>
+                <span id="whiteAvatarStatus">Absent</span>
+              </div>
+            </div>
+            <div class="avatar-row">
+              <span id="blackAvatar" class="avatar-bubble small" data-avatar="empty">?</span>
+              <div>
+                <strong id="blackNameText">Noirs</strong>
+                <span id="blackAvatarStatus">Absent</span>
+              </div>
+            </div>
+          </div>
+
+          <form id="profileForm" class="profile-form">
+            <label for="nameInput">Pseudo</label>
+            <input id="nameInput" type="text" maxlength="20" autocomplete="off" placeholder="Ton pseudo">
+            <button class="button secondary" type="submit">OK</button>
+          </form>
+
+          <div class="avatar-picker">
+            <span>Ton avatar</span>
+            <div id="avatarChoices" class="avatar-choices" role="list"></div>
+          </div>
+        </section>
+
+        <section class="history-card">
+          <div class="history-head">
+            <h2>Coups</h2>
+            <span id="historyCount">0</span>
+          </div>
+          <ol id="moveHistory" class="move-history"></ol>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <div id="promotionOverlay" class="promotion-overlay" hidden>
+    <div class="promotion-dialog" role="dialog" aria-modal="true" aria-labelledby="promotionTitle">
+      <h2 id="promotionTitle">Promotion</h2>
+      <div id="promotionChoices" class="promotion-choices"></div>
+    </div>
+  </div>
+
+  <script src="/client.js" defer></script>
+</body>
+</html>

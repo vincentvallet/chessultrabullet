@@ -1,0 +1,14 @@
+{
+  "name": "mindchess-online",
+  "version": "0.2.0",
+  "private": true,
+  "description": "MindChess Online POC - multijoueur WebSocket avec intentions visibles.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.17.1"
+  }
+}
