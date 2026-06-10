@@ -23,6 +23,8 @@
   --radius: 8px;
   --shadow: 0 24px 80px rgba(0, 0, 0, 0.34);
   --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --cursor-grab: url("/cursors/grab.svg") 14 13, grab;
+  --cursor-grabbing: url("/cursors/grabbing.svg") 14 14, grabbing;
   color-scheme: dark;
 }
 
@@ -727,7 +729,7 @@ h1 {
     0 22px 70px rgba(0, 0, 0, 0.46),
     0 0 0 1px rgba(255, 255, 255, 0.08),
     inset 0 0 0 1px rgba(255, 255, 255, 0.16);
-  cursor: crosshair;
+  cursor: var(--cursor-grab);
   touch-action: none;
   user-select: none;
   contain: layout paint;
@@ -1081,11 +1083,11 @@ h1 {
 }
 
 .remote-cursor.black .cursor-shape::before {
-  background: #f8fbff;
+  background: #0a1118;
 }
 
 .remote-cursor.black .cursor-shape::after {
-  background: #061018;
+  background: #f8fbff;
 }
 
 /* 8. History */
@@ -1388,6 +1390,20 @@ body[data-board-theme="rosewood"] {
   grid-template-columns: 1fr;
 }
 
+.board-clock-panel .clock-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+}
+
+.board-clock-panel .clock-form label,
+.board-clock-panel .clock-form button {
+  grid-column: 1 / -1;
+}
+
+.board-clock-panel .clock-form button {
+  width: 100%;
+}
+
 .clock-box {
   position: relative;
   overflow: hidden;
@@ -1463,11 +1479,11 @@ body[data-board-theme="rosewood"] {
 }
 
 .chessboard {
-  cursor: grab;
+  cursor: var(--cursor-grab);
 }
 
 body.drag-lock .chessboard {
-  cursor: grabbing;
+  cursor: var(--cursor-grabbing);
 }
 
 .chessboard.readonly {

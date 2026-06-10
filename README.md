@@ -2,7 +2,7 @@
 
 MindChess Online est une preuve de concept multijoueur en temps réel : deux joueurs jouent une partie d'échecs simplifiée et voient le curseur, le drag, les halos et les hésitations de l'autre joueur.
 
-Le serveur utilise les pièces SVG placées dans `../pieces` depuis ce projet, par exemple `wP.svg`, `bK.svg`, etc.
+Le serveur utilise les pièces SVG placées dans `./pieces` depuis ce projet, par exemple `wP.svg`, `bK.svg`, etc.
 
 ## Installation
 

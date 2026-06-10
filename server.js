@@ -51,7 +51,7 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-app.use("/pieces", express.static(path.join(__dirname, "..", "pieces")));
+app.use("/pieces", express.static(path.join(__dirname, "pieces")));
 app.use(express.static(path.join(__dirname, "public")));
 
 wss.on("connection", (ws) => {
