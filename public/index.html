@@ -16,6 +16,7 @@
       <div class="top-actions" aria-label="Commandes">
         <button id="orientationBtn" class="button secondary" type="button">Inverser l'echiquier</button>
         <button id="soundToggleBtn" class="button secondary" type="button" aria-pressed="true">Sons actives</button>
+        <button id="takebackBtn" class="button secondary" type="button">Reprendre coup</button>
         <button id="newGameBtn" class="button primary" type="button">Nouvelle partie</button>
       </div>
     </header>
@@ -53,20 +54,24 @@
             <div class="clock-row">
               <div id="whiteClockBox" class="clock-box white-clock">
                 <span>Blancs</span>
-                <strong id="whiteClock">15.000</strong>
+                <strong id="whiteClock">01:00:000</strong>
                 <i id="whiteClockGauge" class="clock-gauge" aria-hidden="true"></i>
               </div>
               <div id="blackClockBox" class="clock-box black-clock">
                 <span>Noirs</span>
-                <strong id="blackClock">15.000</strong>
+                <strong id="blackClock">01:00:000</strong>
                 <i id="blackClockGauge" class="clock-gauge" aria-hidden="true"></i>
               </div>
             </div>
             <form id="clockForm" class="clock-form">
-              <label for="clockInput">Temps initial</label>
-              <input id="clockInput" type="number" min="1" max="600" step="1" value="15" inputmode="decimal">
-              <span>s</span>
-              <button class="button secondary" type="submit">Appliquer</button>
+              <label id="clockModeLabel" for="clockInput">Temps initial</label>
+              <input id="clockInput" type="number" min="1" max="600" step="1" value="60" inputmode="decimal">
+              <select id="clockTargetSelect" hidden>
+                <option value="opponent">Adversaire</option>
+                <option value="both">Deux joueurs</option>
+              </select>
+              <span id="clockUnitText">s</span>
+              <button id="clockSubmitBtn" class="button secondary" type="submit">Appliquer</button>
             </form>
           </div>
 
@@ -74,6 +79,7 @@
             <div id="board" class="chessboard" role="grid" aria-label="Echiquier"></div>
             <div id="localDragGhost" class="local-drag-ghost" aria-hidden="true"></div>
             <div id="confettiLayer" class="confetti-layer" aria-hidden="true"></div>
+            <svg id="arrowSvg" class="arrow-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg>
             <div id="intentOverlay" class="intent-overlay" aria-hidden="true">
               <svg id="trailSvg" class="trail-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
                 <defs>
@@ -94,10 +100,31 @@
         </div>
 
         <div id="premoveList" class="premove-list" aria-live="polite"></div>
+        <div id="takebackBox" class="takeback-box" aria-live="polite"></div>
         <div id="errorBox" class="error-box" role="status" aria-live="polite"></div>
       </section>
 
       <aside class="side-panel" aria-label="Statut de partie">
+        <section class="lobby-card">
+          <div class="lobby-head">
+            <h2>Lobby</h2>
+            <span id="roomText">Table principale</span>
+          </div>
+          <form id="challengeForm" class="challenge-form">
+            <label>Cadence <input id="challengeTimeInput" type="number" min="1" max="600" step="1" value="60" inputmode="numeric"></label>
+            <label>Couleur
+              <select id="challengeColorSelect">
+                <option value="random">Aleatoire</option>
+                <option value="white">Blancs</option>
+                <option value="black">Noirs</option>
+              </select>
+            </label>
+            <button class="button secondary" type="submit">Defier</button>
+          </form>
+          <div id="challengeList" class="lobby-list" aria-live="polite"></div>
+          <div id="roomList" class="lobby-list" aria-live="polite"></div>
+        </section>
+
         <section class="chat-card">
           <div class="chat-head">
             <h2>Chat</h2>

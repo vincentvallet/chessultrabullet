@@ -15,37 +15,35 @@ const PROMOTION_TYPES = new Set(["Q", "R", "B", "N"]);
 const CHAT_HISTORY_LIMIT = 80;
 const CHAT_TEXT_MAX = 240;
 const PLAYER_NAME_MAX = 20;
-const DEFAULT_CLOCK_MS = 15000;
+const DEFAULT_CLOCK_MS = 60000;
 const MIN_CLOCK_MS = 1000;
 const MAX_CLOCK_MS = 600000;
-const SERVER_INTENT_MIN_INTERVAL_MS = 80;
+const SERVER_INTENT_MIN_INTERVAL_MS = 34;
 const INTENT_BUFFER_DROP_BYTES = 64 * 1024;
 const PIECES = {
   white: { K: "♔", Q: "♕", R: "♖", B: "♗", N: "♘", P: "♙" },
   black: { K: "♚", Q: "♛", R: "♜", B: "♝", N: "♞", P: "♟" }
 };
 const COLOR_LABELS = { white: "Blancs", black: "Noirs" };
-const chatMessages = [];
+const DEFAULT_ROOM_ID = "main";
+let chatMessages = [];
+let arrows = [];
+let takebackOffer = null;
 
-const gameState = {
-  board: createInitialBoard(),
-  turn: "white",
-  moveHistory: [],
-  lastMove: null,
-  status: "playing",
-  check: null,
-  winner: null,
-  gameOver: false,
-  resultReason: null,
-  castlingRights: createInitialCastlingRights(),
-  halfmoveClock: 0,
-  clock: createInitialClock(),
-  createdAt: Date.now()
-};
-
+let gameState = createGameState(DEFAULT_CLOCK_MS);
+let positionCounts = new Map();
+let activeRoom = null;
 const clients = new Map();
-const positionCounts = new Map();
-recordCurrentPosition();
+const rooms = new Map();
+const challenges = new Map();
+const mainRoom = createRoom({
+  id: DEFAULT_ROOM_ID,
+  name: "Table principale",
+  initialMs: DEFAULT_CLOCK_MS,
+  status: "active"
+});
+rooms.set(mainRoom.id, mainRoom);
+setActiveRoom(mainRoom);
 
 const app = express();
 const server = http.createServer(app);
@@ -55,12 +53,12 @@ app.use("/pieces", express.static(path.join(__dirname, "pieces")));
 app.use(express.static(path.join(__dirname, "public")));
 
 wss.on("connection", (ws) => {
-  const role = assignRole();
   const client = {
     id: createClientId(),
     ws,
-    role,
-    avatar: defaultAvatarForRole(role),
+    role: "spectator",
+    roomId: null,
+    avatar: defaultAvatarForRole("spectator"),
     name: "",
     connectedAt: Date.now(),
     lastIntent: null,
@@ -72,22 +70,30 @@ wss.on("connection", (ws) => {
   };
 
   clients.set(client.id, client);
-  const clockChanged = syncClockRunningState();
-  console.log(`[ws] client connected ${client.id} as ${client.role}`);
+  joinRoom(client, DEFAULT_ROOM_ID, { silent: true });
+  const room = getClientRoom(client);
+  console.log(`[ws] client connected ${client.id} as ${client.role} in ${client.roomId}`);
 
-  send(client, {
-    type: "welcome",
-    clientId: client.id,
-    role: client.role,
-    gameState: serializeGameState(),
-    players: getPlayersState(),
-    chatMessages: chatMessages.map(cloneChatMessage)
+  withRoom(room, () => {
+    const clockChanged = syncClockRunningState();
+    send(client, {
+      type: "welcome",
+      clientId: client.id,
+      role: client.role,
+      room: roomSummary(room),
+      lobby: lobbyState(),
+      gameState: serializeGameState(),
+      players: getPlayersState(),
+      chatMessages: chatMessages.map(cloneChatMessage),
+      arrows: visibleArrowsFor(client)
+    });
+    sendExistingIntents(client);
+    broadcast({ type: "players", players: getPlayersState() });
+    if (clockChanged) {
+      broadcast({ type: "gameState", gameState: serializeGameState() });
+    }
   });
-  sendExistingIntents(client);
-  broadcast({ type: "players", players: getPlayersState() });
-  if (clockChanged) {
-    broadcast({ type: "gameState", gameState: serializeGameState() });
-  }
+  broadcastLobby();
 
   ws.on("pong", () => {
     client.isAlive = true;
@@ -102,8 +108,41 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (message.type === "createChallenge") {
+      handleCreateChallenge(client, message);
+      return;
+    }
+
+    if (message.type === "acceptChallenge") {
+      handleAcceptChallenge(client, message);
+      return;
+    }
+
+    if (message.type === "watchRoom") {
+      handleWatchRoom(client, message);
+      return;
+    }
+
+    if (message.type === "lobby") {
+      const currentRoom = getClientRoom(client);
+      send(client, { type: "lobby", lobby: lobbyState(), room: currentRoom ? roomSummary(currentRoom) : null });
+      return;
+    }
+
+    const room = getClientRoom(client);
+    if (!room) {
+      send(client, { type: "error", message: "Aucune table active." });
+      return;
+    }
+
+    withRoom(room, () => {
     if (message.type === "intent") {
       handleIntent(client, message);
+      return;
+    }
+
+    if (message.type === "arrow") {
+      handleArrow(client, message);
       return;
     }
 
@@ -118,6 +157,8 @@ wss.on("connection", (ws) => {
         return;
       }
 
+      takebackOffer = null;
+      broadcast({ type: "takebackCleared" });
       broadcast({ type: "gameState", gameState: serializeGameState() });
       return;
     }
@@ -143,7 +184,7 @@ wss.on("connection", (ws) => {
 
       resetGame();
       syncClockRunningState();
-      broadcast({ type: "resetDone", gameState: serializeGameState() });
+      broadcast({ type: "resetDone", gameState: serializeGameState(), arrows: [] });
       return;
     }
 
@@ -152,7 +193,23 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (message.type === "addTime") {
+      handleAddTime(client, message);
+      return;
+    }
+
+    if (message.type === "takebackRequest") {
+      handleTakebackRequest(client);
+      return;
+    }
+
+    if (message.type === "takebackResponse") {
+      handleTakebackResponse(client, message);
+      return;
+    }
+
     send(client, { type: "error", message: "Type de message inconnu." });
+    });
   });
 
   ws.on("error", (error) => {
@@ -165,7 +222,7 @@ wss.on("connection", (ws) => {
 });
 
 const heartbeat = setInterval(() => {
-  for (const client of clients.values()) {
+  for (const client of scopedClients()) {
     if (client.isAlive === false) {
       client.ws.terminate();
       cleanupClient(client.id);
@@ -182,8 +239,12 @@ const heartbeat = setInterval(() => {
 }, 30000);
 
 const clockWatcher = setInterval(() => {
-  if (updateClockNow(true)) {
-    broadcast({ type: "gameState", gameState: serializeGameState() });
+  for (const room of rooms.values()) {
+    withRoom(room, () => {
+      if (updateClockNow(true)) {
+        broadcast({ type: "gameState", gameState: serializeGameState() });
+      }
+    });
   }
 }, 50);
 
@@ -195,6 +256,285 @@ wss.on("close", () => {
 server.listen(PORT, () => {
   console.log(`Chess UltraBullet listening on http://localhost:${PORT}`);
 });
+
+function createGameState(initialMs = DEFAULT_CLOCK_MS) {
+  return {
+    board: createInitialBoard(),
+    turn: "white",
+    moveHistory: [],
+    lastMove: null,
+    status: "playing",
+    check: null,
+    winner: null,
+    gameOver: false,
+    resultReason: null,
+    castlingRights: createInitialCastlingRights(),
+    halfmoveClock: 0,
+    clock: createInitialClock(initialMs),
+    createdAt: Date.now()
+  };
+}
+
+function createRoom(options = {}) {
+  const room = {
+    id: String(options.id || createClientId()),
+    name: String(options.name || "Table").slice(0, 40),
+    status: options.status || "waiting",
+    initialMs: clampNumber(options.initialMs || DEFAULT_CLOCK_MS, MIN_CLOCK_MS, MAX_CLOCK_MS, DEFAULT_CLOCK_MS),
+    createdAt: Date.now(),
+    clients: new Set(),
+    gameState: createGameState(options.initialMs || DEFAULT_CLOCK_MS),
+    positionCounts: new Map(),
+    chatMessages: [],
+    arrows: [],
+    takebackOffer: null
+  };
+
+  withRoom(room, () => recordCurrentPosition());
+  return room;
+}
+
+function setActiveRoom(room) {
+  activeRoom = room || null;
+  if (!room) return;
+  gameState = room.gameState;
+  positionCounts = room.positionCounts;
+  chatMessages = room.chatMessages;
+  arrows = room.arrows;
+  takebackOffer = room.takebackOffer;
+}
+
+function withRoom(room, callback) {
+  const previousRoom = activeRoom;
+  const previousGameState = gameState;
+  const previousPositionCounts = positionCounts;
+  const previousChatMessages = chatMessages;
+  const previousArrows = arrows;
+  const previousTakebackOffer = takebackOffer;
+
+  setActiveRoom(room);
+
+  try {
+    return callback();
+  } finally {
+    if (room) {
+      room.gameState = gameState;
+      room.positionCounts = positionCounts;
+      room.chatMessages = chatMessages;
+      room.arrows = arrows;
+      room.takebackOffer = takebackOffer;
+    }
+
+    activeRoom = previousRoom;
+    gameState = previousGameState;
+    positionCounts = previousPositionCounts;
+    chatMessages = previousChatMessages;
+    arrows = previousArrows;
+    takebackOffer = previousTakebackOffer;
+  }
+}
+
+function scopedClients() {
+  if (!activeRoom) return Array.from(clients.values());
+
+  return Array.from(activeRoom.clients)
+    .map((id) => clients.get(id))
+    .filter(Boolean);
+}
+
+function roomSummary(room) {
+  return withRoom(room, () => {
+    const players = getPlayersState();
+    return {
+      id: room.id,
+      name: room.name,
+      status: room.status,
+      initialMs: room.initialMs,
+      moveCount: gameState.moveHistory.length,
+      players: {
+        white: Boolean(players.white),
+        black: Boolean(players.black),
+        spectators: Number(players.spectators) || 0
+      },
+      createdAt: room.createdAt
+    };
+  });
+}
+
+function lobbyState() {
+  return {
+    rooms: Array.from(rooms.values()).map(roomSummary),
+    challenges: Array.from(challenges.values()).map((challenge) => ({ ...challenge }))
+  };
+}
+
+function getClientRoom(client) {
+  return client && client.roomId ? rooms.get(client.roomId) || null : null;
+}
+
+function chooseRoleForRoom(room, preferredRole = null) {
+  return withRoom(room, () => {
+    if ((preferredRole === "white" || preferredRole === "black") && !hasConnectedRole(preferredRole)) {
+      return preferredRole;
+    }
+
+    const available = COLORS.filter((color) => !hasConnectedRole(color));
+    if (!available.length) return "spectator";
+    if (preferredRole === "random") {
+      return available[Math.floor(Math.random() * available.length)];
+    }
+    return available[0];
+  });
+}
+
+function joinRoom(client, roomId, options = {}) {
+  const room = rooms.get(roomId);
+  if (!client || !room) return false;
+
+  const previousRoom = getClientRoom(client);
+  if (previousRoom) {
+    previousRoom.clients.delete(client.id);
+    withRoom(previousRoom, () => {
+      removeClientArrows(client.id);
+      const clockChanged = syncClockRunningState();
+      broadcast({ type: "players", players: getPlayersState() });
+      broadcastArrows();
+      if (clockChanged) {
+        broadcast({ type: "gameState", gameState: serializeGameState() });
+      }
+    });
+  }
+
+  client.roomId = room.id;
+  client.role = options.role || chooseRoleForRoom(room, options.preferredRole || null);
+  client.avatar = client.avatar || defaultAvatarForRole(client.role);
+  client.lastIntent = null;
+  client.lastBroadcastIntent = null;
+  client.pendingIntent = null;
+  if (client.intentFlushTimer) {
+    clearTimeout(client.intentFlushTimer);
+    client.intentFlushTimer = null;
+  }
+
+  room.clients.add(client.id);
+
+  withRoom(room, () => {
+    const clockChanged = syncClockRunningState();
+    if (!options.silent) {
+      sendRoomJoined(client, room);
+    }
+    broadcast({ type: "players", players: getPlayersState() });
+    if (clockChanged) {
+      broadcast({ type: "gameState", gameState: serializeGameState() });
+    }
+  });
+
+  broadcastLobby();
+  return true;
+}
+
+function sendRoomJoined(client, room) {
+  send(client, {
+    type: "roomJoined",
+    role: client.role,
+    room: roomSummary(room),
+    lobby: lobbyState(),
+    gameState: serializeGameState(),
+    players: getPlayersState(),
+    chatMessages: chatMessages.map(cloneChatMessage),
+    arrows: visibleArrowsFor(client)
+  });
+  sendExistingIntents(client);
+}
+
+function broadcastLobby() {
+  const payload = { type: "lobby", lobby: lobbyState() };
+  for (const client of clients.values()) {
+    send(client, {
+      ...payload,
+      room: getClientRoom(client) ? roomSummary(getClientRoom(client)) : null
+    });
+  }
+}
+
+function handleCreateChallenge(client, message) {
+  if (!client) return;
+
+  const seconds = clampNumber(Number(message.seconds) || 60, 1, 600, 60);
+  const colorChoice = ["white", "black", "random"].includes(message.color) ? message.color : "random";
+  const room = createRoom({
+    name: `${seconds}s ${colorChoice === "random" ? "aleatoire" : colorChoice}`,
+    initialMs: seconds * 1000,
+    status: "waiting"
+  });
+  rooms.set(room.id, room);
+
+  const preferredRole = colorChoice === "random" ? "random" : colorChoice;
+  joinRoom(client, room.id, { preferredRole });
+
+  const challenge = {
+    id: createClientId(),
+    roomId: room.id,
+    seconds,
+    color: colorChoice,
+    creatorId: client.id,
+    creatorName: client.name || roleName(client.role),
+    createdAt: Date.now()
+  };
+  challenges.set(challenge.id, challenge);
+  room.challengeId = challenge.id;
+  broadcastLobby();
+}
+
+function handleAcceptChallenge(client, message) {
+  const challenge = challenges.get(String(message.challengeId || ""));
+  if (!challenge) {
+    send(client, { type: "error", message: "Defi indisponible." });
+    return;
+  }
+
+  const room = rooms.get(challenge.roomId);
+  if (!room) {
+    challenges.delete(challenge.id);
+    broadcastLobby();
+    return;
+  }
+
+  const creator = clients.get(challenge.creatorId);
+  const creatorRole = creator && creator.roomId === room.id ? creator.role : null;
+  const role = creatorRole === "white" ? "black" : creatorRole === "black" ? "white" : chooseRoleForRoom(room, "random");
+  room.status = "active";
+  challenges.delete(challenge.id);
+  joinRoom(client, room.id, { role });
+  broadcastLobby();
+}
+
+function handleWatchRoom(client, message) {
+  const room = rooms.get(String(message.roomId || ""));
+  if (!room) {
+    send(client, { type: "error", message: "Table introuvable." });
+    return;
+  }
+
+  joinRoom(client, room.id, { role: "spectator" });
+}
+
+function removeChallengesByClient(clientId) {
+  let changed = false;
+  for (const [id, challenge] of challenges.entries()) {
+    if (challenge.creatorId === clientId) {
+      challenges.delete(id);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function roleName(role) {
+  if (role === "white") return "Blancs";
+  if (role === "black") return "Noirs";
+  return "Spectateur";
+}
 
 function createInitialBoard() {
   const board = {};
@@ -244,7 +584,7 @@ function isValidSquare(square) {
 }
 
 function assignRole() {
-  const rolesTaken = new Set(Array.from(clients.values()).map((client) => client.role));
+  const rolesTaken = new Set(scopedClients().map((client) => client.role));
 
   if (!rolesTaken.has("white")) return "white";
   if (!rolesTaken.has("black")) return "black";
@@ -260,7 +600,7 @@ function getPlayersState() {
     black: null
   };
 
-  for (const client of clients.values()) {
+  for (const client of scopedClients()) {
     if (client.role === "white") {
       white = true;
       profiles.white = publicClientProfile(client);
@@ -294,7 +634,7 @@ function serializeGameState() {
 }
 
 function broadcast(message, exceptClientId = null) {
-  for (const client of clients.values()) {
+  for (const client of scopedClients()) {
     if (client.id === exceptClientId) continue;
     send(client, message);
   }
@@ -422,8 +762,190 @@ function handleClockConfig(client, message) {
   broadcast({ type: "gameState", gameState: serializeGameState() });
 }
 
+function handleAddTime(client, message) {
+  if (!client || client.role === "spectator") {
+    send(client, { type: "error", message: "Les spectateurs ne peuvent pas modifier le chronometre." });
+    return;
+  }
+
+  if (updateClockNow(true)) {
+    broadcast({ type: "gameState", gameState: serializeGameState() });
+    send(client, { type: "error", message: "Temps ecoule." });
+    return;
+  }
+
+  if (gameState.gameOver) {
+    send(client, { type: "error", message: "La partie est terminee." });
+    return;
+  }
+
+  if (!gameState.clock || !gameState.clock.started) {
+    send(client, { type: "error", message: "La partie n'est pas lancee." });
+    return;
+  }
+
+  const seconds = Number(message.seconds);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    send(client, { type: "error", message: "Chronometre invalide." });
+    return;
+  }
+
+  updateClockNow(false);
+
+  const addMs = clampNumber(Math.round(seconds * 1000), MIN_CLOCK_MS, MAX_CLOCK_MS, MIN_CLOCK_MS);
+  const target = message.target === "both" ? "both" : "opponent";
+
+  if (target === "both") {
+    gameState.clock.whiteMs = clampNumber(gameState.clock.whiteMs + addMs, 0, MAX_CLOCK_MS, gameState.clock.whiteMs);
+    gameState.clock.blackMs = clampNumber(gameState.clock.blackMs + addMs, 0, MAX_CLOCK_MS, gameState.clock.blackMs);
+  } else {
+    const opponent = opposite(client.role);
+    const key = `${opponent}Ms`;
+    gameState.clock[key] = clampNumber(gameState.clock[key] + addMs, 0, MAX_CLOCK_MS, gameState.clock[key]);
+  }
+
+  gameState.clock.updatedAt = Date.now();
+  syncClockRunningState();
+  broadcast({ type: "gameState", gameState: serializeGameState() });
+}
+
+function handleTakebackRequest(client) {
+  if (!client || client.role === "spectator") {
+    send(client, { type: "error", message: "Les spectateurs ne peuvent pas demander de reprise." });
+    return;
+  }
+
+  if (gameState.gameOver) {
+    send(client, { type: "error", message: "La partie est terminee." });
+    return;
+  }
+
+  const lastMove = gameState.moveHistory[gameState.moveHistory.length - 1];
+  if (!lastMove || lastMove.color !== client.role) {
+    send(client, { type: "error", message: "Tu ne peux reprendre que ton dernier coup." });
+    return;
+  }
+
+  if (!hasConnectedRole(opposite(client.role))) {
+    send(client, { type: "error", message: "Aucun adversaire connecte pour accepter." });
+    return;
+  }
+
+  takebackOffer = {
+    id: createClientId(),
+    requesterId: client.id,
+    requesterRole: client.role,
+    responderRole: opposite(client.role),
+    moveNumber: gameState.moveHistory.length,
+    timestamp: Date.now()
+  };
+
+  broadcast({ type: "takebackOffer", offer: cloneTakebackOffer(takebackOffer) });
+}
+
+function handleTakebackResponse(client, message) {
+  if (!takebackOffer) {
+    send(client, { type: "error", message: "Aucune demande de reprise en cours." });
+    return;
+  }
+
+  if (!client || client.role !== takebackOffer.responderRole) {
+    send(client, { type: "error", message: "Seul l'adversaire peut repondre." });
+    return;
+  }
+
+  const accepted = Boolean(message.accept);
+  if (!accepted) {
+    takebackOffer = null;
+    broadcast({ type: "takebackCleared" });
+    broadcast({ type: "error", message: "Reprise refusee." });
+    return;
+  }
+
+  const result = undoLastMoveForTakeback(takebackOffer.requesterRole);
+  takebackOffer = null;
+  broadcast({ type: "takebackCleared" });
+
+  if (!result.ok) {
+    send(client, { type: "error", message: result.message });
+    return;
+  }
+
+  broadcast({ type: "gameState", gameState: serializeGameState() });
+}
+
+function undoLastMoveForTakeback(requesterRole) {
+  const lastMove = gameState.moveHistory[gameState.moveHistory.length - 1];
+  if (!lastMove || lastMove.color !== requesterRole) {
+    return { ok: false, message: "Reprise impossible." };
+  }
+
+  updateClockNow(false);
+  const clock = { ...gameState.clock };
+  const history = gameState.moveHistory.slice(0, -1).map(cloneMove);
+
+  rebuildGameFromHistory(history);
+  gameState.clock = {
+    ...clock,
+    started: history.length > 0,
+    running: false,
+    activeColor: gameState.turn,
+    updatedAt: Date.now()
+  };
+  syncClockRunningState();
+  return { ok: true };
+}
+
+function rebuildGameFromHistory(history) {
+  gameState.board = createInitialBoard();
+  gameState.turn = "white";
+  gameState.moveHistory = [];
+  gameState.lastMove = null;
+  resetGameStatus();
+  gameState.castlingRights = createInitialCastlingRights();
+  gameState.halfmoveClock = 0;
+  positionCounts.clear();
+  recordCurrentPosition();
+
+  history.forEach((move) => {
+    applyRecordedMove(move);
+    gameState.turn = opposite(move.color);
+    gameState.lastMove = move;
+    gameState.moveHistory.push(move);
+    updateCastlingRights(move);
+    updateHalfmoveClock(move);
+    recordCurrentPosition();
+  });
+
+  if (history.length) {
+    updateGameStatus();
+  } else {
+    resetGameStatus();
+  }
+}
+
+function applyRecordedMove(move) {
+  if (!move || !move.from || !move.to) return;
+
+  const piece = gameState.board[move.from];
+  if (!piece) return;
+
+  delete gameState.board[move.from];
+  if (move.capturedSquare && move.capturedSquare !== move.to) {
+    delete gameState.board[move.capturedSquare];
+  }
+
+  gameState.board[move.to] = move.promotedPiece ? clonePiece(move.promotedPiece) : piece;
+
+  if (move.rookMove) {
+    const rook = gameState.board[move.rookMove.from];
+    delete gameState.board[move.rookMove.from];
+    if (rook) gameState.board[move.rookMove.to] = rook;
+  }
+}
+
 function hasConnectedRole(role) {
-  for (const client of clients.values()) {
+  for (const client of scopedClients()) {
     if (client.role === role) return true;
   }
 
@@ -1053,6 +1575,8 @@ function squareColor(square) {
 function resetGame() {
   const initialClockMs = gameState.clock ? gameState.clock.initialMs : DEFAULT_CLOCK_MS;
 
+  takebackOffer = null;
+  arrows.splice(0, arrows.length);
   gameState.board = createInitialBoard();
   gameState.turn = "white";
   gameState.moveHistory = [];
@@ -1065,7 +1589,7 @@ function resetGame() {
   recordCurrentPosition();
   gameState.createdAt = Date.now();
 
-  for (const client of clients.values()) {
+  for (const client of scopedClients()) {
     client.lastIntent = null;
     client.lastBroadcastIntent = null;
     client.pendingIntent = null;
@@ -1082,6 +1606,45 @@ function cleanupClient(clientId) {
   const client = clients.get(clientId);
   if (!client) return;
 
+  const room = getClientRoom(client);
+  const role = client.role;
+
+  if (client.intentFlushTimer) {
+    clearTimeout(client.intentFlushTimer);
+    client.intentFlushTimer = null;
+  }
+
+  if (room) {
+    withRoom(room, () => {
+      updateClockNow(false);
+      removeClientArrows(clientId);
+      room.clients.delete(clientId);
+      clients.delete(clientId);
+      const clockChanged = syncClockRunningState();
+      console.log(`[ws] client disconnected ${client.id} (${role}) from ${room.id}`);
+
+      broadcast({ type: "players", players: getPlayersState() });
+      broadcastArrows();
+      if (clockChanged) {
+        broadcast({ type: "gameState", gameState: serializeGameState() });
+      }
+
+      if (role === "white") {
+        broadcast({ type: "error", message: "Blancs deconnectes." });
+      }
+
+      if (role === "black") {
+        broadcast({ type: "error", message: "Noirs deconnectes." });
+      }
+    });
+  } else {
+    clients.delete(clientId);
+  }
+
+  removeChallengesByClient(clientId);
+  broadcastLobby();
+  return;
+
   if (client.intentFlushTimer) {
     clearTimeout(client.intentFlushTimer);
     client.intentFlushTimer = null;
@@ -1089,10 +1652,12 @@ function cleanupClient(clientId) {
 
   updateClockNow(false);
   clients.delete(clientId);
+  removeClientArrows(clientId);
   const clockChanged = syncClockRunningState();
   console.log(`[ws] client disconnected ${client.id} (${client.role})`);
 
   broadcast({ type: "players", players: getPlayersState() });
+  broadcastArrows();
   if (clockChanged) {
     broadcast({ type: "gameState", gameState: serializeGameState() });
   }
@@ -1159,6 +1724,73 @@ function handleChat(client, message) {
   broadcast({ type: "chat", message: cloneChatMessage(chatMessage) });
 }
 
+function handleArrow(client, message) {
+  if (!client) return;
+
+  if (message.action === "clear") {
+    removeClientArrows(client.id);
+    broadcastArrows();
+    return;
+  }
+
+  if (message.action !== "add") return;
+
+  const from = normalizeSquare(message.from);
+  const to = normalizeSquare(message.to);
+  if (!isValidSquare(from) || !isValidSquare(to) || from === to) return;
+
+  const arrow = {
+    id: createClientId(),
+    clientId: client.id,
+    role: client.role,
+    from,
+    to,
+    color: message.color === "red" ? "red" : "green",
+    timestamp: Date.now()
+  };
+
+  const existingIndex = arrows.findIndex((item) => {
+    return item.clientId === arrow.clientId
+      && item.from === arrow.from
+      && item.to === arrow.to
+      && item.color === arrow.color;
+  });
+
+  if (existingIndex >= 0) {
+    arrows.splice(existingIndex, 1);
+  } else {
+    arrows.push(arrow);
+  }
+
+  if (arrows.length > 80) {
+    arrows.splice(0, arrows.length - 80);
+  }
+
+  broadcastArrows();
+}
+
+function removeClientArrows(clientId) {
+  for (let index = arrows.length - 1; index >= 0; index -= 1) {
+    if (arrows[index].clientId === clientId) {
+      arrows.splice(index, 1);
+    }
+  }
+}
+
+function visibleArrowsFor(client) {
+  if (!client || client.role === "spectator") {
+    return arrows.map(cloneArrow);
+  }
+
+  return arrows.filter((arrow) => arrow.role !== "spectator").map(cloneArrow);
+}
+
+function broadcastArrows() {
+  for (const client of scopedClients()) {
+    send(client, { type: "arrows", arrows: visibleArrowsFor(client) });
+  }
+}
+
 function handleIntent(client, message) {
   if (client.role === "spectator") return;
 
@@ -1217,7 +1849,7 @@ function broadcastIntent(sourceClient, intent) {
     ...intent
   };
 
-  for (const client of clients.values()) {
+  for (const client of scopedClients()) {
     if (client.id === sourceClient.id) continue;
     if (client.ws.readyState !== WebSocket.OPEN) continue;
     if (client.ws.bufferedAmount > INTENT_BUFFER_DROP_BYTES) continue;
@@ -1261,7 +1893,7 @@ function sanitizeIntent(client, message) {
 }
 
 function sendExistingIntents(newClient) {
-  for (const client of clients.values()) {
+  for (const client of scopedClients()) {
     if (client.id === newClient.id || !client.lastIntent) continue;
 
     send(newClient, {
@@ -1325,6 +1957,28 @@ function cloneChatMessage(message) {
     name: message.name,
     text: message.text,
     timestamp: message.timestamp
+  };
+}
+
+function cloneArrow(arrow) {
+  return {
+    id: arrow.id,
+    clientId: arrow.clientId,
+    role: arrow.role,
+    from: arrow.from,
+    to: arrow.to,
+    color: arrow.color,
+    timestamp: arrow.timestamp
+  };
+}
+
+function cloneTakebackOffer(offer) {
+  return {
+    id: offer.id,
+    requesterId: offer.requesterId,
+    requesterRole: offer.requesterRole,
+    moveNumber: offer.moveNumber,
+    timestamp: offer.timestamp
   };
 }
 
