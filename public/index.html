@@ -35,6 +35,10 @@
             <h2 id="boardTitle">Arene</h2>
             <p id="shortStatus" class="short-status">Connexion au serveur...</p>
           </div>
+          <div class="ready-panel" aria-live="polite">
+            <button id="readyBtn" class="button primary ready-button" type="button">Pret a jouer</button>
+            <span id="readyStatus" class="ready-status">En attente des joueurs</span>
+          </div>
         </div>
 
         <div class="board-toolbar">
@@ -73,34 +77,45 @@
               <span id="clockUnitText">s</span>
               <button id="clockSubmitBtn" class="button secondary" type="submit">Appliquer</button>
             </form>
+            <div class="board-action-row" aria-label="Actions de partie">
+              <button id="drawBtn" class="button secondary" type="button">Proposer nulle</button>
+              <button id="resignBtn" class="button secondary danger-action" type="button">Abandonner</button>
+            </div>
           </div>
 
-          <div id="boardWrap" class="board-wrap">
-            <div id="board" class="chessboard" role="grid" aria-label="Echiquier"></div>
-            <div id="localDragGhost" class="local-drag-ghost" aria-hidden="true"></div>
-            <div id="confettiLayer" class="confetti-layer" aria-hidden="true"></div>
-            <svg id="arrowSvg" class="arrow-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg>
-            <div id="intentOverlay" class="intent-overlay" aria-hidden="true">
-              <svg id="trailSvg" class="trail-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
-                <defs>
-                  <filter id="softGlow">
-                    <feGaussianBlur stdDeviation="1.4" result="blur"></feGaussianBlur>
-                    <feMerge>
-                      <feMergeNode in="blur"></feMergeNode>
-                      <feMergeNode in="SourceGraphic"></feMergeNode>
-                    </feMerge>
-                  </filter>
-                </defs>
-              </svg>
-              <div id="remoteHalos" class="remote-layer"></div>
-              <div id="remoteGhosts" class="remote-layer"></div>
-              <div id="remoteCursors" class="remote-layer"></div>
+          <div id="boardColumn" class="board-column">
+            <div id="boardWrap" class="board-wrap">
+              <div id="board" class="chessboard" role="grid" aria-label="Echiquier"></div>
+              <div id="localDragGhost" class="local-drag-ghost" aria-hidden="true"></div>
+              <div id="confettiLayer" class="confetti-layer" aria-hidden="true"></div>
+              <div id="countdownOverlay" class="countdown-overlay" hidden aria-live="assertive" aria-atomic="true">
+                <span id="countdownText">3</span>
+              </div>
+              <svg id="arrowSvg" class="arrow-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg>
+              <div id="intentOverlay" class="intent-overlay" aria-hidden="true">
+                <svg id="trailSvg" class="trail-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
+                  <defs>
+                    <filter id="softGlow">
+                      <feGaussianBlur stdDeviation="1.4" result="blur"></feGaussianBlur>
+                      <feMerge>
+                        <feMergeNode in="blur"></feMergeNode>
+                        <feMergeNode in="SourceGraphic"></feMergeNode>
+                      </feMerge>
+                    </filter>
+                  </defs>
+                </svg>
+                <div id="remoteHalos" class="remote-layer"></div>
+                <div id="remoteGhosts" class="remote-layer"></div>
+                <div id="remoteCursors" class="remote-layer"></div>
+              </div>
             </div>
+            <div id="matchScore" class="match-score" aria-live="polite"></div>
           </div>
         </div>
 
         <div id="premoveList" class="premove-list" aria-live="polite"></div>
         <div id="takebackBox" class="takeback-box" aria-live="polite"></div>
+        <div id="drawBox" class="takeback-box draw-box" aria-live="polite"></div>
         <div id="errorBox" class="error-box" role="status" aria-live="polite"></div>
       </section>
 
@@ -108,8 +123,10 @@
         <section class="lobby-card">
           <div class="lobby-head">
             <h2>Lobby</h2>
-            <span id="roomText">Table principale</span>
+            <button id="lobbyHomeBtn" class="lobby-home-btn" type="button">Table principale</button>
           </div>
+          <div id="roomText" class="lobby-current">Table actuelle : Table principale</div>
+          <div class="lobby-section-title">Créer un défi</div>
           <form id="challengeForm" class="challenge-form">
             <label>Cadence <input id="challengeTimeInput" type="number" min="1" max="600" step="1" value="60" inputmode="numeric"></label>
             <label>Couleur
@@ -119,9 +136,11 @@
                 <option value="black">Noirs</option>
               </select>
             </label>
-            <button class="button secondary" type="submit">Defier</button>
+            <button class="button secondary" type="submit">Créer</button>
           </form>
+          <div class="lobby-section-title">Défis ouverts</div>
           <div id="challengeList" class="lobby-list" aria-live="polite"></div>
+          <div class="lobby-section-title">Tables</div>
           <div id="roomList" class="lobby-list" aria-live="polite"></div>
         </section>
 

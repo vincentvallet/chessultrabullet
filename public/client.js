@@ -2,6 +2,7 @@
 
 const FILES = ["a", "b", "c", "d", "e", "f", "g", "h"];
 const COLORS = ["white", "black"];
+const MAIN_ROOM_ID = "main";
 const COLOR_LABELS = { white: "Blancs", black: "Noirs", spectator: "Spectateur" };
 const TURN_LABELS = { white: "Blancs", black: "Noirs" };
 const AVATAR_OPTIONS = [
@@ -29,6 +30,8 @@ const TRAIL_MAX_AGE_MS = effectivePerformanceMode ? 950 : 1050;
 const TRAIL_POINT_MIN_INTERVAL_MS = 34;
 const REMOTE_CURSOR_EASING = effectivePerformanceMode ? 0.46 : 0.52;
 const CLOCK_DEFAULT_MS = 60000;
+const BOARD_SIZE_MIN = 420;
+const BOARD_SIZE_MAX = 860;
 const NOTATION_SYMBOLS = {
   white: { K: "\u2654", Q: "\u2655", R: "\u2656", B: "\u2657", N: "\u2658", P: "" },
   black: { K: "\u265a", Q: "\u265b", R: "\u265c", B: "\u265d", N: "\u265e", P: "" }
@@ -37,6 +40,9 @@ const ARROW_COLORS = {
   green: "#45d483",
   red: "#ff5f72"
 };
+const ARROW_END_MARGIN_PERCENT = 3.2;
+const ARROW_HEAD_LENGTH_PERCENT = 3.4;
+const ARROW_HEAD_WIDTH_PERCENT = 2.5;
 const PIECE_SYMBOLS = {
   white: { K: "♔", Q: "♕", R: "♖", B: "♗", N: "♘", P: "♙" },
   black: { K: "♚", Q: "♛", R: "♜", B: "♝", N: "♞", P: "♟" }
@@ -57,6 +63,8 @@ let gameState = {
   resultReason: null,
   halfmoveClock: 0,
   clock: createDefaultClockState(),
+  ready: createDefaultReadyState(),
+  countdown: createDefaultCountdownState(),
   createdAt: Date.now()
 };
 let playersState = { white: false, black: false, spectators: 0 };
@@ -83,6 +91,9 @@ let pendingLocalMove = null;
 let boardArrows = [];
 let arrowDragState = createEmptyArrowDragState();
 let takebackOffer = null;
+let drawOffer = null;
+let matchScore = createEmptyMatchScore();
+let lastScoredGameKey = "";
 
 const els = {};
 let listenersAttached = false;
@@ -91,6 +102,7 @@ let queuedIntent = null;
 let intentTimer = 0;
 let overlayFrame = 0;
 let clockFrame = 0;
+let countdownFrame = 0;
 let errorTimer = 0;
 let localHighlightState = { hover: null, target: null, origin: null };
 let pendingPromotionResolve = null;
@@ -170,11 +182,15 @@ function handleSocketMessage(message) {
     playersState = normalizePlayersState(data.players);
     chatMessages = normalizeChatMessages(data.chatMessages);
     boardArrows = normalizeArrows(data.arrows);
+    if (Object.prototype.hasOwnProperty.call(data, "drawOffer")) {
+      drawOffer = normalizeDrawOffer(data.drawOffer);
+    }
     remoteIntents = new Map();
     clearRemoteOverlay();
     boardOrientation = myRole === "black" ? "black" : "white";
     selectedAvatar = currentProfileAvatar() || defaultAvatarForRole(myRole);
     selectedName = currentProfileName();
+    syncMatchScorePair();
     resetLocalDrag();
     renderApp();
     sendMessage({ type: "profile", avatar: selectedAvatar, name: selectedName });
@@ -186,10 +202,13 @@ function handleSocketMessage(message) {
     playersState = normalizePlayersState(data.players);
     selectedAvatar = currentProfileAvatar() || selectedAvatar;
     selectedName = currentProfileName();
+    syncMatchScorePair();
     removeDisconnectedIntents();
     renderStatus();
+    renderReadyControls();
     renderProfiles();
     renderAvatarChoices();
+    renderMatchScore();
     scheduleIntentRender();
     return;
   }
@@ -215,6 +234,8 @@ function handleSocketMessage(message) {
     pendingPremoveAttempt = null;
     pendingLocalMove = null;
     takebackOffer = null;
+    drawOffer = normalizeDrawOffer(data.drawOffer);
+    syncMatchScorePair();
     boardOrientation = myRole === "black" ? "black" : "white";
     renderApp();
     return;
@@ -245,12 +266,42 @@ function handleSocketMessage(message) {
     return;
   }
 
+  if (data.type === "drawOffer") {
+    drawOffer = normalizeDrawOffer(data.offer);
+    renderDrawOffer();
+    return;
+  }
+
+  if (data.type === "drawOfferCleared") {
+    drawOffer = null;
+    renderDrawOffer();
+    return;
+  }
+
   if (data.type === "gameState" || data.type === "resetDone") {
     const previousState = gameState;
     pendingLocalMove = null;
     pendingPremoveAttempt = null;
     takebackOffer = null;
+    if (Object.prototype.hasOwnProperty.call(data, "drawOffer")) {
+      drawOffer = normalizeDrawOffer(data.drawOffer);
+    }
+    if (data.role && isPlayerRole(data.role)) {
+      myRole = data.role;
+    }
+    if (data.room) {
+      currentRoom = normalizeRoom(data.room);
+    }
+    if (data.players) {
+      playersState = normalizePlayersState(data.players);
+    }
     gameState = normalizeGameState(data.gameState);
+    if (!hasGameStarted()) {
+      premoveQueue = [];
+      pendingPremoveAttempt = null;
+      pendingLocalMove = null;
+      viewingMoveIndex = null;
+    }
     if (data.type === "resetDone") {
       remoteIntents = new Map();
       clearRemoteOverlay();
@@ -260,6 +311,10 @@ function handleSocketMessage(message) {
       boardArrows = normalizeArrows(data.arrows);
       lastConfettiKey = null;
       lastSoundMoveKey = null;
+      boardOrientation = myRole === "black" ? "black" : "white";
+      selectedAvatar = currentProfileAvatar() || selectedAvatar;
+      selectedName = currentProfileName();
+      syncMatchScorePair();
     }
     resetLocalDrag();
     if (!gameState.gameOver) {
@@ -408,6 +463,8 @@ function sendIntentThrottled(intent, immediate = false) {
 
 function renderApp() {
   renderStatus();
+  renderReadyControls();
+  renderCountdownOverlay();
   renderProfiles();
   renderAvatarChoices();
   renderLobby();
@@ -416,6 +473,8 @@ function renderApp() {
   renderChat();
   renderPremoveList();
   renderTakeback();
+  renderDrawOffer();
+  renderMatchScore();
   applyBoardPreferences();
   renderSoundToggle();
   renderArrows();
@@ -431,7 +490,8 @@ function renderBoard() {
     console.warn("[perf] renderBoard called shortly after pointer movement");
   }
 
-  const displayBoard = currentDisplayBoard();
+  const displayModel = currentDisplayModel();
+  const displayBoard = displayModel.board;
   els.board.textContent = "";
   els.board.classList.toggle("readonly", myRole === "spectator" || !myRole);
   els.board.classList.toggle("reviewing", viewingMoveIndex !== null);
@@ -472,7 +532,7 @@ function renderBoard() {
   });
 
   els.board.appendChild(fragment);
-  renderPieces(displayBoard);
+  renderPieces(displayBoard, displayModel.underlays);
   renderPremoveHighlights();
   localHighlightState = {
     hover: null,
@@ -481,13 +541,18 @@ function renderBoard() {
   };
 }
 
-function renderPieces(board = gameState.board || {}) {
+function renderPieces(board = gameState.board || {}, underlays = {}) {
 
   for (const [squareName, piece] of Object.entries(board)) {
     const square = els.board.querySelector(`[data-square="${squareName}"]`);
     if (!square || !piece) continue;
 
-    const pieceEl = createPieceElement(piece);
+    const underlay = underlays && underlays[squareName];
+    if (underlay) {
+      square.appendChild(createPieceElement(underlay, "premove-underlay-piece"));
+    }
+
+    const pieceEl = createPieceElement(piece, underlay ? "premove-overlay-piece" : "");
 
     if (gameState.lastMove && gameState.lastMove.to === squareName) {
       pieceEl.classList.add("just-moved");
@@ -501,22 +566,22 @@ function renderPieces(board = gameState.board || {}) {
   }
 }
 
-function createPieceElement(piece) {
+function createPieceElement(piece, extraClass = "") {
   const img = document.createElement("img");
-  img.className = `piece-img ${piece.color}-piece`;
+  img.className = `piece-img ${piece.color}-piece${extraClass ? ` ${extraClass}` : ""}`;
   img.src = pieceAssetPath(piece);
   img.alt = "";
   img.draggable = false;
   img.setAttribute("aria-hidden", "true");
   img.addEventListener("error", () => {
-    img.replaceWith(createUnicodePieceElement(piece));
+    img.replaceWith(createUnicodePieceElement(piece, extraClass));
   }, { once: true });
   return img;
 }
 
-function createUnicodePieceElement(piece) {
+function createUnicodePieceElement(piece, extraClass = "") {
   const pieceEl = document.createElement("span");
-  pieceEl.className = `piece ${piece.color}-piece`;
+  pieceEl.className = `piece ${piece.color}-piece${extraClass ? ` ${extraClass}` : ""}`;
   pieceEl.textContent = piece.symbol;
   pieceEl.setAttribute("aria-hidden", "true");
   return pieceEl;
@@ -609,7 +674,116 @@ function isAddTimeMode() {
 
 function renderGameActionButton() {
   if (!els.newGameBtn) return;
-  els.newGameBtn.textContent = isAddTimeMode() ? "Ajouter du temps" : "Nouvelle partie";
+  els.newGameBtn.textContent = "Nouvelle partie";
+
+  const canUseGameActions = isPlayerRole(myRole) && !gameState.gameOver;
+  if (els.takebackBtn) {
+    els.takebackBtn.disabled = !canUseGameActions;
+  }
+  if (els.drawBtn) {
+    els.drawBtn.disabled = !canUseGameActions;
+  }
+  if (els.resignBtn) {
+    els.resignBtn.disabled = !canUseGameActions;
+  }
+}
+
+function renderReadyControls() {
+  if (!els.readyBtn || !els.readyStatus) return;
+
+  const ready = gameState.ready || createDefaultReadyState();
+  const countdownActive = isCountdownActive();
+  const started = hasGameStarted();
+  const bothPlayers = Boolean(playersState.white && playersState.black);
+  const myReady = isPlayerRole(myRole) && Boolean(ready[myRole]);
+  const readyCount = Number(Boolean(ready.white)) + Number(Boolean(ready.black));
+
+  els.readyBtn.hidden = false;
+  els.readyBtn.disabled = !isPlayerRole(myRole) || gameState.gameOver || started || countdownActive;
+  els.readyBtn.textContent = countdownActive
+    ? "Depart..."
+    : started
+      ? "Partie lancee"
+      : myReady
+        ? "Pret"
+        : "Pret a jouer";
+
+  els.readyStatus.classList.toggle("is-ready", myReady);
+  els.readyStatus.classList.toggle("is-countdown", countdownActive);
+
+  if (!isPlayerRole(myRole)) {
+    els.readyStatus.textContent = "Observation";
+    return;
+  }
+
+  if (gameState.gameOver) {
+    els.readyStatus.textContent = "Nouvelle partie requise";
+    return;
+  }
+
+  if (started) {
+    els.readyStatus.textContent = "Partie en cours";
+    return;
+  }
+
+  if (countdownActive) {
+    els.readyStatus.textContent = `Depart dans ${countdownNumber()}`;
+    return;
+  }
+
+  if (!bothPlayers) {
+    els.readyStatus.textContent = myReady ? "Pret, adversaire attendu" : "Adversaire attendu";
+    return;
+  }
+
+  els.readyStatus.textContent = `Prets : ${readyCount}/2`;
+}
+
+function renderCountdownOverlay() {
+  if (!els.countdownOverlay || !els.countdownText) return;
+
+  const visible = isCountdownActive() && !hasGameStarted() && !gameState.gameOver;
+  els.countdownOverlay.hidden = !visible;
+
+  if (!visible) {
+    if (countdownFrame) {
+      cancelAnimationFrame(countdownFrame);
+      countdownFrame = 0;
+    }
+    return;
+  }
+
+  els.countdownText.textContent = String(countdownNumber());
+  scheduleCountdownRender();
+}
+
+function scheduleCountdownRender() {
+  if (countdownFrame) return;
+
+  countdownFrame = requestAnimationFrame(() => {
+    countdownFrame = 0;
+    renderReadyControls();
+    renderCountdownOverlay();
+  });
+}
+
+function isCountdownActive() {
+  return Boolean(gameState.countdown && gameState.countdown.active);
+}
+
+function countdownRemainingMs() {
+  const countdown = gameState.countdown || createDefaultCountdownState();
+  if (!countdown.active || !countdown.endsAt) return 0;
+
+  const serverNow = Number(countdown.serverNow) || Number(countdown.startedAt) || Date.now();
+  const receivedAt = Number(countdown.receivedAt) || Date.now();
+  const projectedNow = serverNow + Math.max(0, Date.now() - receivedAt);
+  return Math.max(0, Number(countdown.endsAt) - projectedNow);
+}
+
+function countdownNumber() {
+  if (!isCountdownActive()) return 0;
+  return clamp(Math.ceil(countdownRemainingMs() / 1000), 1, 3);
 }
 
 function scheduleClockRender() {
@@ -774,6 +948,8 @@ function handleOfficialStateEffects(previousState, nextState, isReset) {
     }
   }
 
+  recordCompletedGame(nextState);
+
   if (nextState.gameOver && nextState.winner) {
     const confettiKey = `${nextState.status}:${nextState.winner}:${nextState.moveHistory.length}`;
     if (confettiKey !== lastConfettiKey) {
@@ -783,6 +959,176 @@ function handleOfficialStateEffects(previousState, nextState, isReset) {
   }
 }
 
+function syncMatchScorePair() {
+  const pair = currentMatchPair();
+  if (!pair) return;
+
+  const pairKey = pair.map((player) => player.id).sort().join("|");
+  if (matchScore.pairKey !== pairKey) {
+    matchScore = {
+      pairKey,
+      players: pair,
+      games: []
+    };
+    lastScoredGameKey = "";
+    return;
+  }
+
+  matchScore.players = pair;
+}
+
+function currentMatchPair() {
+  const profiles = playersState.profiles || {};
+  const white = profiles.white;
+  const black = profiles.black;
+  if (!white || !black || !white.clientId || !black.clientId || white.clientId === black.clientId) return null;
+
+  return [
+    {
+      id: white.clientId,
+      role: "white",
+      label: profileTitle(white, "white")
+    },
+    {
+      id: black.clientId,
+      role: "black",
+      label: profileTitle(black, "black")
+    }
+  ];
+}
+
+function recordCompletedGame(state) {
+  if (!state || !state.gameOver) return;
+  syncMatchScorePair();
+  if (!matchScore.pairKey) return;
+
+  const key = [
+    currentRoom ? currentRoom.id : "",
+    state.status || "",
+    state.resultReason || "",
+    state.winner || "draw",
+    Array.isArray(state.moveHistory) ? state.moveHistory.length : 0,
+    state.lastMove && state.lastMove.timestamp ? state.lastMove.timestamp : state.createdAt
+  ].join(":");
+
+  if (key === lastScoredGameKey) return;
+  lastScoredGameKey = key;
+
+  const profiles = playersState.profiles || {};
+  const winnerId = state.winner && profiles[state.winner] ? profiles[state.winner].clientId : null;
+  const isDraw = !winnerId;
+
+  matchScore.games.push({
+    key,
+    winnerId,
+    draw: isDraw,
+    timestamp: Date.now()
+  });
+
+  if (matchScore.games.length > 24) {
+    matchScore.games.splice(0, matchScore.games.length - 24);
+  }
+
+  renderMatchScore();
+}
+
+function renderMatchScore() {
+  if (!els.matchScore) return;
+
+  syncMatchScorePair();
+  els.matchScore.textContent = "";
+
+  if (!matchScore.pairKey || matchScore.players.length !== 2) {
+    const empty = document.createElement("div");
+    empty.className = "match-score-empty";
+    empty.textContent = "Score rencontre : en attente de deux joueurs.";
+    els.matchScore.appendChild(empty);
+    return;
+  }
+
+  const totals = matchScoreTotals();
+  const header = document.createElement("div");
+  header.className = "match-score-head";
+  const title = document.createElement("strong");
+  title.textContent = "Score rencontre";
+  const totalText = document.createElement("span");
+  totalText.textContent = `${formatScorePoint(totals[matchScore.players[0].id])} - ${formatScorePoint(totals[matchScore.players[1].id])}`;
+  header.appendChild(title);
+  header.appendChild(totalText);
+  els.matchScore.appendChild(header);
+
+  const grid = document.createElement("div");
+  grid.className = "match-score-grid";
+
+  matchScore.players.forEach((player) => {
+    const name = document.createElement("div");
+    name.className = "match-score-name";
+    name.textContent = player.label;
+
+    const games = document.createElement("div");
+    games.className = "match-score-games";
+    if (!matchScore.games.length) {
+      const dash = document.createElement("span");
+      dash.className = "score-chip empty";
+      dash.textContent = "-";
+      games.appendChild(dash);
+    } else {
+      matchScore.games.forEach((game) => games.appendChild(createScoreChip(player.id, game)));
+    }
+
+    const total = document.createElement("div");
+    total.className = "match-score-total";
+    total.textContent = formatScorePoint(totals[player.id]);
+
+    grid.appendChild(name);
+    grid.appendChild(games);
+    grid.appendChild(total);
+  });
+
+  els.matchScore.appendChild(grid);
+}
+
+function createScoreChip(playerId, game) {
+  const chip = document.createElement("span");
+  if (game.draw) {
+    chip.className = "score-chip draw";
+    chip.textContent = "1/2";
+    return chip;
+  }
+
+  const won = game.winnerId === playerId;
+  chip.className = `score-chip ${won ? "win" : "loss"}`;
+  chip.textContent = won ? "1" : "0";
+  return chip;
+}
+
+function matchScoreTotals() {
+  const totals = {};
+  matchScore.players.forEach((player) => {
+    totals[player.id] = 0;
+  });
+
+  matchScore.games.forEach((game) => {
+    if (game.draw) {
+      matchScore.players.forEach((player) => {
+        totals[player.id] += 0.5;
+      });
+      return;
+    }
+
+    if (game.winnerId && Object.prototype.hasOwnProperty.call(totals, game.winnerId)) {
+      totals[game.winnerId] += 1;
+    }
+  });
+
+  return totals;
+}
+
+function formatScorePoint(value) {
+  const number = Number(value) || 0;
+  return Number.isInteger(number) ? String(number) : number.toFixed(1);
+}
+
 function renderSoundToggle() {
   if (!els.soundToggleBtn) return;
   els.soundToggleBtn.textContent = soundEnabled ? "Sons actives" : "Sons coupes";
@@ -790,17 +1136,38 @@ function renderSoundToggle() {
 }
 
 function applyBoardPreferences() {
+  const maxBoardSize = currentBoardSizeMax();
+  boardSize = clamp(boardSize, BOARD_SIZE_MIN, maxBoardSize);
+
   if (els.boardWrap) {
     els.boardWrap.style.setProperty("--board-size", `${boardSize}px`);
   }
 
   document.body.dataset.boardTheme = boardTheme;
+  if (els.boardSizeInput) {
+    els.boardSizeInput.min = String(BOARD_SIZE_MIN);
+    els.boardSizeInput.max = String(maxBoardSize);
+  }
   if (els.boardSizeInput && Number(els.boardSizeInput.value) !== boardSize) {
     els.boardSizeInput.value = String(boardSize);
   }
   if (els.boardThemeSelect && els.boardThemeSelect.value !== boardTheme) {
     els.boardThemeSelect.value = boardTheme;
   }
+}
+
+function currentBoardSizeMax() {
+  const layoutWidth = els.boardColumn
+    ? els.boardColumn.getBoundingClientRect().width
+    : BOARD_SIZE_MAX;
+  const heightLimit = window.innerHeight ? window.innerHeight * 0.72 : BOARD_SIZE_MAX;
+  const available = Math.floor(Math.min(
+    BOARD_SIZE_MAX,
+    layoutWidth || BOARD_SIZE_MAX,
+    heightLimit || BOARD_SIZE_MAX
+  ));
+
+  return clamp(available, BOARD_SIZE_MIN, BOARD_SIZE_MAX);
 }
 
 function playSound(kind) {
@@ -941,7 +1308,14 @@ function renderAvatarChoices() {
 function renderLobby() {
   if (!els.challengeList || !els.roomList) return;
 
-  setText(els.roomText, currentRoom ? currentRoom.name : "Lobby");
+  const currentName = currentRoom ? currentRoom.name : "Lobby";
+  const currentStatus = currentRoom && currentRoom.status === "waiting" ? "en attente" : "active";
+  setText(els.roomText, `Table actuelle : ${currentName} (${currentStatus})`);
+  if (els.lobbyHomeBtn) {
+    const onMainRoom = Boolean(currentRoom && currentRoom.id === MAIN_ROOM_ID);
+    els.lobbyHomeBtn.disabled = onMainRoom;
+    els.lobbyHomeBtn.textContent = onMainRoom ? "Table principale" : "Retour lobby";
+  }
   els.challengeList.textContent = "";
   els.roomList.textContent = "";
 
@@ -959,12 +1333,18 @@ function renderLobby() {
       row.className = "lobby-row";
 
       const text = document.createElement("span");
-      text.textContent = `${challenge.seconds}s - ${challenge.color === "random" ? "aleatoire" : challenge.color}`;
+      const colorText = challenge.opponentRole
+        ? `cherche ${COLOR_LABELS[challenge.opponentRole]}`
+        : challenge.color === "random"
+          ? "couleur aleatoire"
+          : COLOR_LABELS[challenge.color] || challenge.color;
+      const creator = challenge.creatorName ? ` par ${challenge.creatorName}` : "";
+      text.textContent = `${challenge.seconds}s, ${colorText}${creator}`;
 
       const button = document.createElement("button");
       button.type = "button";
       button.dataset.challengeId = challenge.id;
-      button.textContent = "Jouer";
+      button.textContent = challenge.creatorId === clientId ? "En attente" : "Rejoindre";
       button.disabled = challenge.creatorId === clientId;
 
       row.appendChild(text);
@@ -987,7 +1367,14 @@ function renderLobby() {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.roomId = room.id;
-    button.textContent = currentRoom && room.id === currentRoom.id ? "Ici" : "Regarder";
+    const hasOpenSeat = !(room.players && room.players.white) || !(room.players && room.players.black);
+    button.textContent = currentRoom && room.id === currentRoom.id
+      ? "Ici"
+      : room.id === MAIN_ROOM_ID
+        ? "Retour"
+        : hasOpenSeat
+          ? "Rejoindre"
+          : "Observer";
     button.disabled = currentRoom && room.id === currentRoom.id;
 
     row.appendChild(text);
@@ -1169,59 +1556,113 @@ function renderArrows() {
   if (!els.arrowSvg) return;
 
   els.arrowSvg.textContent = "";
-  appendArrowDefs(els.arrowSvg);
 
-  boardArrows.forEach((arrow) => appendArrowElement(els.arrowSvg, arrow));
+  boardArrows.forEach((annotation) => appendBoardAnnotationElement(els.arrowSvg, annotation));
 
-  if (arrowDragState.active && arrowDragState.fromSquare && arrowDragState.toSquare && arrowDragState.fromSquare !== arrowDragState.toSquare) {
+  if (arrowDragState.active && arrowDragState.fromSquare && arrowDragState.previewPoint && arrowDragState.moved) {
     appendArrowElement(els.arrowSvg, {
       from: arrowDragState.fromSquare,
       to: arrowDragState.toSquare,
+      toPoint: arrowDragState.previewPoint,
       color: arrowDragState.color,
       preview: true
     });
   }
 }
 
-function appendArrowDefs(svg) {
-  const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
-  Object.entries(ARROW_COLORS).forEach(([name, color]) => {
-    const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
-    marker.setAttribute("id", `arrowHead-${name}`);
-    marker.setAttribute("viewBox", "0 0 10 10");
-    marker.setAttribute("refX", "8.5");
-    marker.setAttribute("refY", "5");
-    marker.setAttribute("markerWidth", "4.2");
-    marker.setAttribute("markerHeight", "4.2");
-    marker.setAttribute("orient", "auto-start-reverse");
+function appendBoardAnnotationElement(svg, annotation) {
+  if (annotation && annotation.kind === "circle") {
+    appendCircleElement(svg, annotation);
+    return;
+  }
 
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
-    path.setAttribute("fill", color);
-    marker.appendChild(path);
-    defs.appendChild(marker);
-  });
-  svg.appendChild(defs);
+  appendArrowElement(svg, annotation);
 }
 
 function appendArrowElement(svg, arrow) {
-  if (!arrow || !isValidSquare(arrow.from) || !isValidSquare(arrow.to) || arrow.from === arrow.to) return;
+  if (!arrow || !isValidSquare(arrow.from)) return;
 
   const from = squareCenterPercent(arrow.from);
-  const to = squareCenterPercent(arrow.to);
-  if (!from || !to) return;
+  const rawTo = arrow.toPoint || squareCenterPercent(arrow.to);
+  if (!from || !rawTo) return;
+
+  const distance = Math.hypot(rawTo.x - from.x, rawTo.y - from.y);
+  if (distance < 0.1) return;
+
+  const margin = arrow.toPoint ? 0 : ARROW_END_MARGIN_PERCENT;
+  const to = shortenArrowEndpoint(from, rawTo, margin);
 
   const colorName = arrow.color === "red" ? "red" : "green";
   const color = ARROW_COLORS[colorName];
-  const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-  line.setAttribute("x1", from.x.toFixed(3));
-  line.setAttribute("y1", from.y.toFixed(3));
-  line.setAttribute("x2", to.x.toFixed(3));
-  line.setAttribute("y2", to.y.toFixed(3));
-  line.setAttribute("class", `board-arrow ${colorName}${arrow.preview ? " preview" : ""}`);
-  line.setAttribute("stroke", color);
-  line.setAttribute("marker-end", `url(#arrowHead-${colorName})`);
-  svg.appendChild(line);
+  const head = arrowHeadPoints(from, to);
+  if (!head) return;
+
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", `M ${from.x.toFixed(3)} ${from.y.toFixed(3)} L ${head.base.x.toFixed(3)} ${head.base.y.toFixed(3)}`);
+  path.setAttribute("class", `board-arrow ${colorName}${arrow.preview ? " preview" : ""}`);
+  path.setAttribute("stroke", color);
+  svg.appendChild(path);
+
+  const polygon = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+  polygon.setAttribute("points", head.points.map((point) => `${point.x.toFixed(3)},${point.y.toFixed(3)}`).join(" "));
+  polygon.setAttribute("class", `board-arrow-head ${colorName}${arrow.preview ? " preview" : ""}`);
+  polygon.setAttribute("fill", color);
+  svg.appendChild(polygon);
+}
+
+function appendCircleElement(svg, circle) {
+  if (!circle || !isValidSquare(circle.square)) return;
+
+  const center = squareCenterPercent(circle.square);
+  const radius = squareRadiusPercent(circle.square);
+  if (!center || !radius) return;
+
+  const colorName = circle.color === "red" ? "red" : "green";
+  const element = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  element.setAttribute("cx", center.x.toFixed(3));
+  element.setAttribute("cy", center.y.toFixed(3));
+  element.setAttribute("r", radius.toFixed(3));
+  element.setAttribute("class", `board-circle ${colorName}`);
+  element.setAttribute("stroke", ARROW_COLORS[colorName]);
+  svg.appendChild(element);
+}
+
+function shortenArrowEndpoint(from, to, margin) {
+  const distance = Math.hypot(to.x - from.x, to.y - from.y);
+  if (!distance || distance <= margin) return to;
+
+  const ratio = (distance - margin) / distance;
+  return {
+    x: from.x + (to.x - from.x) * ratio,
+    y: from.y + (to.y - from.y) * ratio
+  };
+}
+
+function arrowHeadPoints(from, tip) {
+  const dx = tip.x - from.x;
+  const dy = tip.y - from.y;
+  const distance = Math.hypot(dx, dy);
+  if (!distance) return null;
+
+  const ux = dx / distance;
+  const uy = dy / distance;
+  const length = Math.min(ARROW_HEAD_LENGTH_PERCENT, distance * 0.42);
+  const width = Math.min(ARROW_HEAD_WIDTH_PERCENT, distance * 0.3);
+  const base = {
+    x: tip.x - ux * length,
+    y: tip.y - uy * length
+  };
+  const nx = -uy;
+  const ny = ux;
+
+  return {
+    base,
+    points: [
+      tip,
+      { x: base.x + nx * width / 2, y: base.y + ny * width / 2 },
+      { x: base.x - nx * width / 2, y: base.y - ny * width / 2 }
+    ]
+  };
 }
 
 function squareCenterPercent(square) {
@@ -1232,6 +1673,23 @@ function squareCenterPercent(square) {
   return {
     x: ((rect.x + rect.size / 2) / metrics.outerWidth) * 100,
     y: ((rect.y + rect.size / 2) / metrics.outerHeight) * 100
+  };
+}
+
+function squareRadiusPercent(square) {
+  const rect = squareRectPixels(square);
+  const metrics = boardMetrics();
+  if (!rect || !metrics.outerWidth) return null;
+  return (rect.size / metrics.outerWidth) * 100 * 0.25;
+}
+
+function pointerPointPercent(pointer) {
+  const metrics = boardMetrics();
+  if (!metrics.outerWidth || !metrics.outerHeight) return null;
+
+  return {
+    x: (pointer.x / metrics.outerWidth) * 100,
+    y: (pointer.y / metrics.outerHeight) * 100
   };
 }
 
@@ -1306,6 +1764,11 @@ function handlePointerDown(event) {
     return;
   }
 
+  const initialPointer = pointerToNormalizedPosition(event);
+  if (event.button === 0 && initialPointer.square && boardArrows.length) {
+    clearBoardAnnotations();
+  }
+
   if (viewingMoveIndex !== null) {
     viewingMoveIndex = null;
     renderBoard();
@@ -1327,7 +1790,12 @@ function handlePointerDown(event) {
     return;
   }
 
-  const pointer = pointerToNormalizedPosition(event);
+  if (!hasGameStarted()) {
+    showError("La partie n'est pas lancee.");
+    return;
+  }
+
+  const pointer = initialPointer;
   const interactionBoard = currentInteractionBoard();
   const piece = pointer.square ? interactionBoard[pointer.square] : null;
 
@@ -1349,11 +1817,21 @@ function handlePointerDown(event) {
   }
 
   if (piece.color !== myRole) {
+    setLocalBoardHighlights({ hover: pointer.square, target: null, origin: null });
+    return;
+  }
+
+  /*
     showError("Cette pièce n’est pas à toi.");
     return;
   }
 
+  */
   const isPremove = gameState.turn !== myRole;
+  if (isPremove && !hasGameStarted()) {
+    showError("Premove impossible avant le debut de la partie.");
+    return;
+  }
 
   selectedPiece = { square: pointer.square, piece };
   dragState = {
@@ -1401,10 +1879,11 @@ function handlePointerMove(event) {
     return;
   }
 
+  const pointer = pointerToNormalizedPosition(event);
+
   if (!isPlayerRole(myRole)) return;
 
   perfStats.lastPointerMoveAt = performance.now();
-  const pointer = pointerToNormalizedPosition(event);
   const piece = pointer.square ? gameState.board[pointer.square] : null;
 
   if (dragState.active) {
@@ -1459,11 +1938,12 @@ function handlePointerUp(event) {
     return;
   }
 
+  const pointer = pointerToNormalizedPosition(event);
+
   if (!dragState.active || dragState.pointerId !== event.pointerId) {
     return;
   }
 
-  const pointer = pointerToNormalizedPosition(event);
   const from = dragState.fromSquare;
   const to = pointer.square;
   const wasDraggingPiece = dragState.grabbedPiece;
@@ -1473,7 +1953,9 @@ function handlePointerUp(event) {
     els.board.releasePointerCapture(event.pointerId);
   }
 
-  if (wasPremove && to && shouldAskPromotion(wasDraggingPiece, to)) {
+  if (to === from) {
+    setLocalBoardHighlights({ hover: pointer.square, target: null, origin: null });
+  } else if (wasPremove && to && shouldAskPromotion(wasDraggingPiece, to)) {
     showPromotionDialog(wasDraggingPiece.color)
       .then((promotion) => enqueuePremove(from, to, promotion, wasDraggingPiece))
       .catch(() => showError("Promotion annulee."));
@@ -1516,7 +1998,10 @@ function handleArrowPointerDown(event) {
     fromSquare: pointer.square,
     toSquare: pointer.square,
     color: event.ctrlKey ? "red" : "green",
-    moved: false
+    moved: false,
+    startX: pointer.x,
+    startY: pointer.y,
+    previewPoint: pointerPointPercent(pointer)
   };
 
   try {
@@ -1533,7 +2018,10 @@ function handleArrowPointerMove(event) {
 
   const pointer = pointerToNormalizedPosition(event);
   arrowDragState.toSquare = pointer.square || arrowDragState.toSquare;
-  arrowDragState.moved = arrowDragState.moved || arrowDragState.toSquare !== arrowDragState.fromSquare;
+  arrowDragState.previewPoint = pointerPointPercent(pointer) || arrowDragState.previewPoint;
+  arrowDragState.moved = arrowDragState.moved
+    || arrowDragState.toSquare !== arrowDragState.fromSquare
+    || Math.hypot(pointer.x - arrowDragState.startX, pointer.y - arrowDragState.startY) > 4;
   renderArrows();
 }
 
@@ -1558,12 +2046,17 @@ function handleArrowPointerUp(event) {
 
   if (moved) {
     sendMessage({ type: "arrow", action: "add", from, to, color });
-  } else {
-    clearPremoves();
-    sendMessage({ type: "arrow", action: "clear" });
+  } else if (from) {
+    sendMessage({ type: "arrow", action: "add", kind: "circle", square: from, color });
   }
 
   renderArrows();
+}
+
+function clearBoardAnnotations() {
+  boardArrows = [];
+  renderArrows();
+  sendMessage({ type: "arrow", action: "clearAll" });
 }
 
 function clearPremoves() {
@@ -1574,6 +2067,11 @@ function clearPremoves() {
 }
 
 function requestMove(from, to, promotion = null) {
+  if (!hasGameStarted()) {
+    showError("La partie n'est pas lancee.");
+    return;
+  }
+
   beginPendingLocalMove(from, to, promotion);
 
   if (!sendMessage({ type: "move", from, to, promotion })) {
@@ -1605,8 +2103,9 @@ function beginPendingLocalMove(from, to, promotion = null) {
 }
 
 function enqueuePremove(from, to, promotion = null, piece = null) {
-  if (!from || !to || from === to) {
-    showError("Premove impossible.");
+  const validation = validatePremoveRequest(from, to, promotion, piece);
+  if (!validation.ok) {
+    showError(validation.message);
     return;
   }
 
@@ -1626,12 +2125,129 @@ function enqueuePremove(from, to, promotion = null, piece = null) {
 function trySendNextPremove() {
   if (!premoveQueue.length) return;
   if (!isPlayerRole(myRole) || gameState.gameOver || gameState.turn !== myRole) return;
+  if (!hasGameStarted()) return;
 
   const next = premoveQueue.shift();
   pendingPremoveAttempt = next;
   renderBoard();
   renderPremoveList();
   requestMove(next.from, next.to, next.promotion);
+}
+
+function validatePremoveRequest(from, to, promotion = null, piece = null) {
+  if (!isPlayerRole(myRole) || gameState.gameOver) {
+    return { ok: false, message: "Premove impossible." };
+  }
+
+  if (!hasGameStarted()) {
+    return { ok: false, message: "Premove impossible avant le debut de la partie." };
+  }
+
+  if (!isValidSquare(from) || !isValidSquare(to) || from === to) {
+    return { ok: false, message: "Premove impossible." };
+  }
+
+  const board = currentInteractionBoard();
+  const movingPiece = piece || board[from] || (gameState.board && gameState.board[from]);
+  if (!movingPiece || movingPiece.color !== myRole) {
+    return { ok: false, message: "Premove impossible." };
+  }
+
+  if (promotion && !PROMOTION_OPTIONS.some((option) => option.type === promotion)) {
+    return { ok: false, message: "Promotion impossible." };
+  }
+
+  if (!premovePieceCanReach(movingPiece, from, to, board)) {
+    return { ok: false, message: "Deplacement de premove impossible." };
+  }
+
+  return { ok: true };
+}
+
+function hasGameStarted() {
+  return Boolean(gameState.clock && gameState.clock.started)
+    || (Array.isArray(gameState.moveHistory) && gameState.moveHistory.length > 0);
+}
+
+function premovePieceCanReach(piece, from, to, board) {
+  if (!piece || !isValidSquare(from) || !isValidSquare(to)) return false;
+
+  const fromPos = squareToPosition(from);
+  const toPos = squareToPosition(to);
+  const df = toPos.file - fromPos.file;
+  const dr = toPos.rank - fromPos.rank;
+  const absDf = Math.abs(df);
+  const absDr = Math.abs(dr);
+
+  if (piece.type === "P") {
+    const direction = piece.color === "white" ? 1 : -1;
+    const startRank = piece.color === "white" ? 2 : 7;
+
+    if (df === 0 && dr === direction) {
+      return true;
+    }
+
+    if (df === 0 && dr === direction * 2 && fromPos.rank === startRank) {
+      const middleSquare = positionToSquare(fromPos.file, fromPos.rank + direction);
+      return !board[middleSquare];
+    }
+
+    if (absDf === 1 && dr === direction) {
+      return true;
+    }
+
+    return false;
+  }
+
+  if (piece.type === "N") {
+    return (absDf === 1 && absDr === 2) || (absDf === 2 && absDr === 1);
+  }
+
+  if (piece.type === "B") {
+    return absDf === absDr && isPathClearOnBoard(from, to, board);
+  }
+
+  if (piece.type === "R") {
+    return (df === 0 || dr === 0) && isPathClearOnBoard(from, to, board);
+  }
+
+  if (piece.type === "Q") {
+    return (absDf === absDr || df === 0 || dr === 0) && isPathClearOnBoard(from, to, board);
+  }
+
+  if (piece.type === "K") {
+    if (absDf <= 1 && absDr <= 1) return true;
+    return canPremoveCastle(piece, from, to, board);
+  }
+
+  return false;
+}
+
+function canPremoveCastle(piece, from, to, board) {
+  const rank = piece.color === "white" ? 1 : 8;
+  if (from !== `e${rank}` || ![`g${rank}`, `c${rank}`].includes(to)) return false;
+
+  const clearSquares = to[0] === "g"
+    ? [`f${rank}`, `g${rank}`]
+    : [`d${rank}`, `c${rank}`, `b${rank}`];
+  return clearSquares.every((square) => !board[square]);
+}
+
+function isPathClearOnBoard(from, to, board) {
+  const fromPos = squareToPosition(from);
+  const toPos = squareToPosition(to);
+  const stepFile = Math.sign(toPos.file - fromPos.file);
+  const stepRank = Math.sign(toPos.rank - fromPos.rank);
+  let file = fromPos.file + stepFile;
+  let rank = fromPos.rank + stepRank;
+
+  while (file !== toPos.file || rank !== toPos.rank) {
+    if (board[positionToSquare(file, rank)]) return false;
+    file += stepFile;
+    rank += stepRank;
+  }
+
+  return true;
 }
 
 function renderPremoveList() {
@@ -1690,6 +2306,41 @@ function renderTakeback() {
 
   els.takebackBox.appendChild(accept);
   els.takebackBox.appendChild(decline);
+}
+
+function renderDrawOffer() {
+  if (!els.drawBox) return;
+
+  els.drawBox.textContent = "";
+  els.drawBox.classList.remove("visible");
+
+  if (!drawOffer || !isPlayerRole(myRole)) return;
+
+  els.drawBox.classList.add("visible");
+  const label = document.createElement("span");
+  const requester = drawOffer.requesterRole === "white" ? "Blancs" : "Noirs";
+
+  if (drawOffer.requesterId === clientId) {
+    label.textContent = "Proposition de nulle envoyee.";
+    els.drawBox.appendChild(label);
+    return;
+  }
+
+  label.textContent = `${requester} propose nulle.`;
+  els.drawBox.appendChild(label);
+
+  const accept = document.createElement("button");
+  accept.type = "button";
+  accept.dataset.drawResponse = "accept";
+  accept.textContent = "Accepter";
+
+  const decline = document.createElement("button");
+  decline.type = "button";
+  decline.dataset.drawResponse = "decline";
+  decline.textContent = "Refuser";
+
+  els.drawBox.appendChild(accept);
+  els.drawBox.appendChild(decline);
 }
 
 function renderPremoveHighlights() {
@@ -1800,6 +2451,7 @@ function flipOrientation() {
 function cacheElements() {
   els.board = document.getElementById("board");
   els.boardWrap = document.getElementById("boardWrap");
+  els.boardColumn = document.getElementById("boardColumn");
   els.localDragGhost = document.getElementById("localDragGhost");
   els.arrowSvg = document.getElementById("arrowSvg");
   els.trailSvg = document.getElementById("trailSvg");
@@ -1837,6 +2489,7 @@ function cacheElements() {
   els.confettiLayer = document.getElementById("confettiLayer");
   els.premoveList = document.getElementById("premoveList");
   els.roomText = document.getElementById("roomText");
+  els.lobbyHomeBtn = document.getElementById("lobbyHomeBtn");
   els.challengeForm = document.getElementById("challengeForm");
   els.challengeTimeInput = document.getElementById("challengeTimeInput");
   els.challengeColorSelect = document.getElementById("challengeColorSelect");
@@ -1862,9 +2515,17 @@ function cacheElements() {
   els.promotionChoices = document.getElementById("promotionChoices");
   els.historyCount = document.getElementById("historyCount");
   els.moveHistory = document.getElementById("moveHistory");
+  els.matchScore = document.getElementById("matchScore");
   els.newGameBtn = document.getElementById("newGameBtn");
+  els.readyBtn = document.getElementById("readyBtn");
+  els.readyStatus = document.getElementById("readyStatus");
+  els.countdownOverlay = document.getElementById("countdownOverlay");
+  els.countdownText = document.getElementById("countdownText");
   els.takebackBtn = document.getElementById("takebackBtn");
   els.takebackBox = document.getElementById("takebackBox");
+  els.drawBtn = document.getElementById("drawBtn");
+  els.resignBtn = document.getElementById("resignBtn");
+  els.drawBox = document.getElementById("drawBox");
   els.orientationBtn = document.getElementById("orientationBtn");
 }
 
@@ -1880,11 +2541,6 @@ function bindUi() {
   els.board.addEventListener("contextmenu", (event) => event.preventDefault());
 
   els.newGameBtn.addEventListener("click", () => {
-    if (isAddTimeMode()) {
-      submitClockConfig();
-      return;
-    }
-
     if (myRole === "spectator") {
       showError("Les spectateurs ne peuvent pas réinitialiser la partie.");
       return;
@@ -1900,12 +2556,51 @@ function bindUi() {
 
   els.orientationBtn.addEventListener("click", flipOrientation);
 
+  els.readyBtn.addEventListener("click", () => {
+    if (!isPlayerRole(myRole)) {
+      showError(myRole === "spectator" ? "Les spectateurs ne peuvent pas lancer la partie." : "Connexion au serveur...");
+      return;
+    }
+
+    sendMessage({ type: "readyToPlay" });
+  });
+
   els.takebackBtn.addEventListener("click", () => {
     if (!isPlayerRole(myRole)) {
       showError(myRole === "spectator" ? "Les spectateurs ne peuvent pas demander de reprise." : "Connexion au serveur...");
       return;
     }
     sendMessage({ type: "takebackRequest" });
+  });
+
+  els.drawBtn.addEventListener("click", () => {
+    if (!isPlayerRole(myRole)) {
+      showError(myRole === "spectator" ? "Les spectateurs ne peuvent pas proposer nulle." : "Connexion au serveur...");
+      return;
+    }
+
+    if (gameState.gameOver) {
+      showError("La partie est terminee.");
+      return;
+    }
+
+    sendMessage({ type: "drawOffer" });
+  });
+
+  els.resignBtn.addEventListener("click", () => {
+    if (!isPlayerRole(myRole)) {
+      showError(myRole === "spectator" ? "Les spectateurs ne peuvent pas abandonner." : "Connexion au serveur...");
+      return;
+    }
+
+    if (gameState.gameOver) {
+      showError("La partie est terminee.");
+      return;
+    }
+
+    if (window.confirm("Abandonner la partie ?")) {
+      sendMessage({ type: "resign" });
+    }
   });
 
   els.avatarChoices.addEventListener("click", (event) => {
@@ -1931,6 +2626,10 @@ function bindUi() {
       seconds,
       color: els.challengeColorSelect ? els.challengeColorSelect.value : "random"
     });
+  });
+
+  els.lobbyHomeBtn.addEventListener("click", () => {
+    sendMessage({ type: "watchRoom", roomId: MAIN_ROOM_ID });
   });
 
   els.challengeList.addEventListener("click", (event) => {
@@ -1961,7 +2660,7 @@ function bindUi() {
   });
 
   els.boardSizeInput.addEventListener("input", () => {
-    boardSize = clamp(Number(els.boardSizeInput.value), 420, 860);
+    boardSize = clamp(Number(els.boardSizeInput.value), BOARD_SIZE_MIN, currentBoardSizeMax());
     applyBoardPreferences();
     scheduleIntentRender();
   });
@@ -1981,6 +2680,12 @@ function bindUi() {
     const button = event.target.closest("[data-takeback-response]");
     if (!button) return;
     sendMessage({ type: "takebackResponse", accept: button.dataset.takebackResponse === "accept" });
+  });
+
+  els.drawBox.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-draw-response]");
+    if (!button) return;
+    sendMessage({ type: "drawResponse", accept: button.dataset.drawResponse === "accept" });
   });
 
   els.promotionChoices.addEventListener("click", (event) => {
@@ -2391,7 +3096,7 @@ function setLocalBoardHighlights(next) {
 function setSourceDragPiece(square, active) {
   if (!square || !els.board) return;
 
-  const pieceEl = els.board.querySelector(`[data-square="${square}"] .piece, [data-square="${square}"] .piece-img`);
+  const pieceEl = els.board.querySelector(`[data-square="${square}"] .premove-overlay-piece, [data-square="${square}"] .piece, [data-square="${square}"] .piece-img`);
   if (pieceEl) {
     pieceEl.classList.toggle("source-drag-piece", Boolean(active));
   }
@@ -2447,21 +3152,36 @@ function getDisplaySquares() {
 }
 
 function currentDisplayBoard() {
+  return currentDisplayModel().board;
+}
+
+function currentDisplayModel() {
   if (viewingMoveIndex === null) {
-    const board = cloneBoardForDisplay(gameState.board || {});
-    applyQueuedPremovesToBoard(board);
-    return applyPendingLocalMove(board);
+    const model = createDisplayModel(gameState.board || {});
+    applyQueuedPremovesToDisplayModel(model);
+    applyPendingLocalMove(model.board);
+    return model;
   }
 
-  return boardAfterMoveIndex(viewingMoveIndex);
+  return {
+    board: boardAfterMoveIndex(viewingMoveIndex),
+    underlays: {}
+  };
 }
 
 function currentInteractionBoard() {
-  const board = cloneBoardForDisplay(gameState.board || {});
+  const model = createDisplayModel(gameState.board || {});
   if (gameState.turn !== myRole) {
-    applyQueuedPremovesToBoard(board);
+    applyQueuedPremovesToDisplayModel(model);
   }
-  return board;
+  return model.board;
+}
+
+function createDisplayModel(board = {}) {
+  return {
+    board: cloneBoardForDisplay(board),
+    underlays: {}
+  };
 }
 
 function cloneBoardForDisplay(board) {
@@ -2494,21 +3214,42 @@ function applyPendingLocalMove(board) {
 }
 
 function applyQueuedPremovesToBoard(board) {
-  premoveQueue.forEach((move) => applyPlannedMoveToBoard(board, move));
-  return board;
+  const model = { board, underlays: {} };
+  applyQueuedPremovesToDisplayModel(model);
+  return model.board;
 }
 
-function applyPlannedMoveToBoard(board, move) {
+function applyQueuedPremovesToDisplayModel(model) {
+  premoveQueue.forEach((move) => applyPlannedMoveToDisplayModel(model, move));
+  return model;
+}
+
+function applyPlannedMoveToDisplayModel(model, move) {
   if (!move || !isValidSquare(move.from) || !isValidSquare(move.to)) return;
 
+  const board = model.board || {};
+  const underlays = model.underlays || {};
   const piece = board[move.from] || move.piece;
   if (!piece) return;
 
   delete board[move.from];
+  if (underlays[move.from]) {
+    board[move.from] = underlays[move.from];
+    delete underlays[move.from];
+  }
 
   const finalPiece = move.promotion
     ? createPiece(piece.color, move.promotion)
     : { ...piece };
+
+  const target = board[move.to] || null;
+  if (target && target.color === finalPiece.color) {
+    if (!underlays[move.to]) {
+      underlays[move.to] = { ...target };
+    }
+  } else {
+    delete underlays[move.to];
+  }
 
   board[move.to] = finalPiece;
   applyPendingCastlingMove(board, move.from, move.to, piece);
@@ -2614,6 +3355,17 @@ function displayPositionForSquare(square) {
   };
 }
 
+function squareToPosition(square) {
+  return {
+    file: FILES.indexOf(square[0]) + 1,
+    rank: Number(square.slice(1))
+  };
+}
+
+function positionToSquare(file, rank) {
+  return `${FILES[file - 1]}${rank}`;
+}
+
 function squareShade(square) {
   const fileIndex = FILES.indexOf(square[0]);
   const rank = Number(square.slice(1));
@@ -2634,6 +3386,8 @@ function normalizeGameState(state) {
     resultReason: typeof safe.resultReason === "string" ? safe.resultReason : null,
     halfmoveClock: Number(safe.halfmoveClock) || 0,
     clock: normalizeClockState(safe.clock),
+    ready: normalizeReadyState(safe.ready),
+    countdown: normalizeCountdownState(safe.countdown),
     createdAt: Number(safe.createdAt) || Date.now()
   };
 }
@@ -2652,6 +3406,26 @@ function normalizeClockState(clock) {
     updatedAt: Number(safe.updatedAt) || Date.now(),
     serverNow: Number(safe.serverNow) || Number(safe.updatedAt) || Date.now(),
     receivedAt: Date.now()
+  };
+}
+
+function normalizeReadyState(ready) {
+  const safe = ready && typeof ready === "object" ? ready : {};
+  return {
+    white: Boolean(safe.white),
+    black: Boolean(safe.black)
+  };
+}
+
+function normalizeCountdownState(countdown) {
+  const safe = countdown && typeof countdown === "object" ? countdown : {};
+  const now = Date.now();
+  return {
+    active: Boolean(safe.active),
+    startedAt: Number(safe.startedAt) || null,
+    endsAt: Number(safe.endsAt) || null,
+    serverNow: Number(safe.serverNow) || now,
+    receivedAt: now
   };
 }
 
@@ -2702,6 +3476,8 @@ function normalizeChallenge(challenge) {
     roomId: String(challenge.roomId || ""),
     seconds: Number(challenge.seconds) || 60,
     color: ["white", "black", "random"].includes(challenge.color) ? challenge.color : "random",
+    creatorRole: isPlayerRole(challenge.creatorRole) ? challenge.creatorRole : null,
+    opponentRole: isPlayerRole(challenge.opponentRole) ? challenge.opponentRole : null,
     creatorId: String(challenge.creatorId || ""),
     creatorName: sanitizeName(challenge.creatorName || ""),
     createdAt: Number(challenge.createdAt) || Date.now()
@@ -2729,11 +3505,25 @@ function normalizeArrows(arrows) {
   return arrows
     .map((arrow) => {
       if (!arrow || typeof arrow !== "object") return null;
+      if (arrow.kind === "circle") {
+        const square = String(arrow.square || "").trim().toLowerCase();
+        if (!isValidSquare(square)) return null;
+        return {
+          id: String(arrow.id || `${square}-${Math.random()}`),
+          kind: "circle",
+          square,
+          color: arrow.color === "red" ? "red" : "green",
+          role: isPlayerRole(arrow.role) ? arrow.role : "spectator",
+          clientId: String(arrow.clientId || "")
+        };
+      }
+
       const from = String(arrow.from || "").trim().toLowerCase();
       const to = String(arrow.to || "").trim().toLowerCase();
       if (!isValidSquare(from) || !isValidSquare(to) || from === to) return null;
       return {
         id: String(arrow.id || `${from}-${to}-${Math.random()}`),
+        kind: "arrow",
         from,
         to,
         color: arrow.color === "red" ? "red" : "green",
@@ -2745,6 +3535,17 @@ function normalizeArrows(arrows) {
 }
 
 function normalizeTakebackOffer(offer) {
+  if (!offer || typeof offer !== "object") return null;
+
+  return {
+    id: String(offer.id || ""),
+    requesterId: String(offer.requesterId || ""),
+    requesterRole: offer.requesterRole === "black" ? "black" : "white",
+    moveNumber: Number(offer.moveNumber) || 0
+  };
+}
+
+function normalizeDrawOffer(offer) {
   if (!offer || typeof offer !== "object") return null;
 
   return {
@@ -2860,12 +3661,17 @@ function computeShortStatus(connected) {
   if (gameState.status === "timeout") {
     return `Temps écoulé. ${TURN_LABELS[gameState.winner]} gagne.`;
   }
+  if (gameState.status === "resignation") {
+    return `Abandon. ${TURN_LABELS[gameState.winner]} gagne.`;
+  }
   if (gameState.status === "stalemate") return "Pat. Partie nulle.";
   if (gameState.status === "draw") return drawLabel();
   if (gameState.check) return `Échec au roi ${TURN_LABELS[gameState.check]}.`;
   if (myRole === "white" && !playersState.black) return "En attente des Noirs";
   if (myRole === "black" && !playersState.white) return "Blancs déconnectés";
   if (myRole === "spectator") return "Tu observes la partie en direct.";
+  if (isCountdownActive()) return `Depart dans ${countdownNumber()}`;
+  if (isPlayerRole(myRole) && !hasGameStarted()) return "En attente du lancement.";
   if (isPlayerRole(myRole) && gameState.turn === myRole) return "À toi de jouer.";
   if (isPlayerRole(myRole)) return `En attente du coup ${TURN_LABELS[gameState.turn].toLowerCase()}.`;
   return "Connexion au serveur…";
@@ -2880,6 +3686,10 @@ function statusLabel() {
     return `Temps : ${TURN_LABELS[gameState.winner]} gagne`;
   }
 
+  if (gameState.status === "resignation") {
+    return `Abandon : ${TURN_LABELS[gameState.winner]} gagne`;
+  }
+
   if (gameState.status === "stalemate") {
     return "Pat : nulle";
   }
@@ -2892,10 +3702,21 @@ function statusLabel() {
     return `Échec : ${TURN_LABELS[gameState.check]}`;
   }
 
+  if (isCountdownActive()) {
+    return `Depart : ${countdownNumber()}`;
+  }
+
+  if (!hasGameStarted()) {
+    const ready = gameState.ready || createDefaultReadyState();
+    const readyCount = Number(Boolean(ready.white)) + Number(Boolean(ready.black));
+    return `Prets : ${readyCount}/2`;
+  }
+
   return `Tour : ${TURN_LABELS[gameState.turn] || "Blancs"}`;
 }
 
 function drawLabel() {
+  if (gameState.resultReason === "agreement") return "Nulle par accord.";
   if (gameState.resultReason === "insufficientMaterial") return "Nulle par matériel insuffisant.";
   if (gameState.resultReason === "fiftyMoveRule") return "Nulle par règle des 50 coups.";
   if (gameState.resultReason === "threefoldRepetition") return "Nulle par répétition triple.";
@@ -3086,7 +3907,18 @@ function createEmptyArrowDragState() {
     fromSquare: null,
     toSquare: null,
     color: "green",
-    moved: false
+    moved: false,
+    startX: 0,
+    startY: 0,
+    previewPoint: null
+  };
+}
+
+function createEmptyMatchScore() {
+  return {
+    pairKey: "",
+    players: [],
+    games: []
   };
 }
 
@@ -3101,6 +3933,24 @@ function createDefaultClockState() {
     started: false,
     running: false,
     updatedAt: now,
+    serverNow: now,
+    receivedAt: now
+  };
+}
+
+function createDefaultReadyState() {
+  return {
+    white: false,
+    black: false
+  };
+}
+
+function createDefaultCountdownState() {
+  const now = Date.now();
+  return {
+    active: false,
+    startedAt: null,
+    endsAt: null,
     serverNow: now,
     receivedAt: now
   };
