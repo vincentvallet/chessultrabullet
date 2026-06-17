@@ -10,7 +10,6 @@
   <div class="app">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Duel mental en direct</p>
         <h1>Chess UltraBullet</h1>
       </div>
     </header>
@@ -37,6 +36,7 @@
             <div class="ready-actions">
               <button id="readyBtn" class="button primary ready-button" type="button">Pret a jouer</button>
               <button id="newGameBtn" class="button secondary" type="button" hidden>Rematch</button>
+              <button id="returnLobbyBtn" class="button secondary" type="button" hidden>Retour au salon</button>
             </div>
           </div>
         </div>
@@ -67,16 +67,6 @@
                 <i id="blackClockGauge" class="clock-gauge" aria-hidden="true"></i>
               </div>
             </div>
-            <form id="clockForm" class="clock-form" hidden>
-              <label id="clockModeLabel" for="clockInput">Temps initial</label>
-              <input id="clockInput" type="number" min="1" max="600" step="1" value="60" inputmode="decimal">
-              <select id="clockTargetSelect" hidden>
-                <option value="opponent">Adversaire</option>
-                <option value="both">Deux joueurs</option>
-              </select>
-              <span id="clockUnitText">s</span>
-              <button id="clockSubmitBtn" class="button secondary" type="submit">Appliquer</button>
-            </form>
             <div class="board-action-row" aria-label="Actions de partie">
               <button id="drawBtn" class="button secondary" type="button">Proposer nulle</button>
               <button id="resignBtn" class="button secondary danger-action" type="button">Abandonner</button>
@@ -197,7 +187,7 @@
         </section>
 
         <section class="profile-card">
-          <h2>Presence</h2>
+            <h2>Pseudo</h2>
           <div id="opponentCard" class="opponent-card">
             <span id="opponentAvatar" class="avatar-bubble" data-avatar="empty">?</span>
             <div>

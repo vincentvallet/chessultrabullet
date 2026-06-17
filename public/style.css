@@ -155,18 +155,26 @@ body.lobby-only .arena-layout {
 
 body.lobby-only .board-panel,
 body.lobby-only .live-strip,
-body.lobby-only .chat-card,
 body.lobby-only .status-card,
-body.lobby-only .profile-card,
 body.lobby-only .history-card {
   display: none;
 }
 
 body.lobby-only .side-panel {
-  width: min(100%, 520px);
+  width: min(100%, 560px);
 }
 
 body:not(.lobby-only) .lobby-card {
+  display: none;
+}
+
+body.lobby-only .profile-card {
+  order: -4;
+}
+
+body.lobby-only .profile-card .opponent-card,
+body.lobby-only .profile-card .avatar-board,
+body.lobby-only .profile-card .avatar-picker {
   display: none;
 }
 
@@ -1582,6 +1590,12 @@ body:not(.lobby-only) .lobby-card {
 .lobby-row button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.lobby-row .watch-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .table-row {

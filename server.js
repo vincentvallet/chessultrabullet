@@ -601,7 +601,8 @@ function handleWatchRoom(client, message) {
     return;
   }
 
-  joinRoom(client, room.id, { preferredRole: "random" });
+  const observeOnly = message.mode === "spectator" || message.role === "spectator";
+  joinRoom(client, room.id, observeOnly ? { role: "spectator" } : { preferredRole: "random" });
 }
 
 function removeChallengesByClient(clientId) {
@@ -2171,11 +2172,6 @@ function handleProfile(client, message) {
 }
 
 function handleChat(client, message) {
-  if (client.role === "spectator") {
-    send(client, { type: "error", message: "Les spectateurs peuvent lire le chat mais pas ecrire." });
-    return;
-  }
-
   const text = sanitizeChatText(message.text);
   if (!text) return;
 
