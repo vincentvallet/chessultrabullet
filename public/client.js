@@ -706,6 +706,7 @@ function renderGameActionButton() {
     els.newGameBtn.hidden = !canRematch;
     els.newGameBtn.disabled = !canRematch;
     els.newGameBtn.textContent = "Rematch";
+    els.newGameBtn.classList.toggle("rematch-pulse", canRematch);
   }
   if (els.returnLobbyBtn) {
     const awayFromSalon = Boolean(currentRoom && currentRoom.id !== MAIN_ROOM_ID);
@@ -1464,8 +1465,16 @@ function renderLobby() {
 
   tables.forEach((table) => {
     const row = document.createElement("div");
-    row.className = "lobby-row table-row";
+    row.className = "lobby-row table-row table-card";
     row.classList.toggle("is-current", table.creatorId === clientId || table.roomId === (currentRoom && currentRoom.id));
+
+    const visual = createTableVisual(table);
+
+    const info = document.createElement("div");
+    info.className = "table-info";
+
+    const header = document.createElement("div");
+    header.className = "table-header";
 
     const cadence = document.createElement("strong");
     cadence.className = "table-cadence";
@@ -1475,24 +1484,92 @@ function renderLobby() {
     color.className = "table-color";
     color.textContent = tableColorLabel(table);
 
-    const button = document.createElement("button");
-    button.type = "button";
+    const players = document.createElement("span");
+    players.className = "table-players";
+    players.textContent = tablePlayerLine(table);
+
+    header.appendChild(cadence);
+    header.appendChild(color);
+    info.appendChild(header);
+    info.appendChild(players);
+
+    const actions = document.createElement("div");
+    actions.className = "table-actions";
+
     if (table.kind === "game") {
-      button.dataset.watchRoomId = table.roomId;
-      button.className = "watch-button";
-      button.setAttribute("aria-label", `Observer ${table.seconds}s ${tableColorLabel(table)}`);
-      button.innerHTML = '<span aria-hidden="true">🔭</span><span>Observer</span>';
+      actions.appendChild(createObserveButton(table));
     } else {
-      button.dataset.challengeId = table.id;
-      button.textContent = table.creatorId === clientId ? "En attente" : "Rejoindre";
-      button.disabled = table.creatorId === clientId;
+      if (table.creatorId === clientId) {
+        const waitingButton = document.createElement("button");
+        waitingButton.type = "button";
+        waitingButton.textContent = "En attente";
+        waitingButton.disabled = true;
+        actions.appendChild(waitingButton);
+      } else {
+        const joinButton = document.createElement("button");
+        joinButton.type = "button";
+        joinButton.dataset.challengeId = table.id;
+        joinButton.textContent = "Rejoindre";
+        actions.appendChild(joinButton);
+        actions.appendChild(createObserveButton(table));
+      }
     }
 
-    row.appendChild(cadence);
-    row.appendChild(color);
-    row.appendChild(button);
+    row.appendChild(visual);
+    row.appendChild(info);
+    row.appendChild(actions);
     els.tableList.appendChild(row);
   });
+}
+
+function createTableVisual(table) {
+  const visual = document.createElement("div");
+  visual.className = "table-visual";
+
+  visual.appendChild(createTableSeat(table, "black"));
+
+  const board = document.createElement("div");
+  board.className = "table-mini-board";
+  board.setAttribute("aria-hidden", "true");
+  for (let index = 0; index < 64; index += 1) {
+    const square = document.createElement("span");
+    const row = Math.floor(index / 8);
+    const col = index % 8;
+    square.className = (row + col) % 2 === 0 ? "mini-light" : "mini-dark";
+    if (row === 1 && tableSeatOccupied(table, "black")) square.classList.add("mini-black-piece");
+    if (row === 6 && tableSeatOccupied(table, "white")) square.classList.add("mini-white-piece");
+    board.appendChild(square);
+  }
+  visual.appendChild(board);
+
+  visual.appendChild(createTableSeat(table, "white"));
+  return visual;
+}
+
+function createTableSeat(table, role) {
+  const occupied = tableSeatOccupied(table, role);
+  const seat = document.createElement("div");
+  seat.className = `table-seat ${role}-seat${occupied ? " is-occupied" : " is-free"}`;
+
+  const color = document.createElement("span");
+  color.textContent = COLOR_LABELS[role];
+
+  const name = document.createElement("strong");
+  name.textContent = occupied ? tableProfileName(table, role, table.creatorRole === role ? table.creatorName : "") : "S'asseoir";
+
+  seat.appendChild(color);
+  seat.appendChild(name);
+  return seat;
+}
+
+function createObserveButton(table) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.dataset.watchRoomId = table.roomId;
+  button.className = "watch-button";
+  button.setAttribute("aria-label", `Observer ${table.seconds}s ${tableColorLabel(table)}`);
+  button.innerHTML = '<span class="watch-icon" aria-hidden="true">&#128301;</span><span>Observer</span>';
+  return button;
 }
 
 function renderLobbyStaticLabels() {
@@ -1522,6 +1599,8 @@ function lobbyTableRows() {
       kind: "game",
       seconds: Math.max(1, Math.round((room.initialMs || CLOCK_DEFAULT_MS) / 1000)),
       color: roomColorChoice(room),
+      players: room.players,
+      profiles: room.profiles,
       createdAt: Number(room.createdAt) || Date.now()
     }));
 
@@ -1536,6 +1615,42 @@ function roomColorChoice(room) {
   if (name.includes("blanc")) return "white";
   if (name.includes("noir")) return "black";
   return "random";
+}
+
+function tablePlayerLine(table) {
+  if (!table) return "";
+
+  if (table.kind === "game") {
+    const white = tableProfileName(table, "white");
+    const black = tableProfileName(table, "black");
+    return `${white} vs ${black}`;
+  }
+
+  const seatedRole = isPlayerRole(table.creatorRole)
+    ? table.creatorRole
+    : table.profiles && table.profiles.black
+      ? "black"
+      : "white";
+  const waitingRole = isPlayerRole(table.opponentRole)
+    ? table.opponentRole
+    : seatedRole === "white"
+      ? "black"
+      : "white";
+  const seatedName = tableProfileName(table, seatedRole, table.creatorName);
+  return `${seatedName} attend ${COLOR_LABELS[waitingRole]}`;
+}
+
+function tableSeatOccupied(table, role) {
+  if (!table || !isPlayerRole(role)) return false;
+  if (table.profiles && table.profiles[role]) return true;
+  if (table.players && table.players[role]) return true;
+  return table.kind === "open" && table.creatorRole === role;
+}
+
+function tableProfileName(table, role, fallbackName = "") {
+  const profile = table && table.profiles ? table.profiles[role] : null;
+  const name = profile && profile.name ? profile.name : sanitizeName(fallbackName || "");
+  return name || COLOR_LABELS[role] || "Joueur";
 }
 
 function tableColorLabel(table) {
@@ -1725,7 +1840,7 @@ function renderArrows() {
 
   boardArrows.forEach((annotation) => appendBoardAnnotationElement(els.arrowSvg, annotation));
 
-  if (arrowDragState.active && arrowDragState.fromSquare && arrowDragState.previewPoint && arrowDragState.moved) {
+  if (arrowDragState.active && arrowDragState.fromSquare && arrowDragState.previewPoint) {
     appendArrowElement(els.arrowSvg, {
       from: arrowDragState.fromSquare,
       to: arrowDragState.toSquare,
@@ -1764,16 +1879,19 @@ function appendArrowElement(svg, arrow) {
   if (!head) return;
 
   const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("d", `M ${from.x.toFixed(3)} ${from.y.toFixed(3)} L ${head.base.x.toFixed(3)} ${head.base.y.toFixed(3)}`);
+  path.setAttribute("d", `M ${from.x.toFixed(3)} ${from.y.toFixed(3)} L ${to.x.toFixed(3)} ${to.y.toFixed(3)}`);
   path.setAttribute("class", `board-arrow ${colorName}${arrow.preview ? " preview" : ""}`);
   path.setAttribute("stroke", color);
   svg.appendChild(path);
 
-  const polygon = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-  polygon.setAttribute("points", head.points.map((point) => `${point.x.toFixed(3)},${point.y.toFixed(3)}`).join(" "));
-  polygon.setAttribute("class", `board-arrow-head ${colorName}${arrow.preview ? " preview" : ""}`);
-  polygon.setAttribute("fill", color);
-  svg.appendChild(polygon);
+  const headPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  headPath.setAttribute("d", [
+    `M ${to.x.toFixed(3)} ${to.y.toFixed(3)} L ${head.left.x.toFixed(3)} ${head.left.y.toFixed(3)}`,
+    `M ${to.x.toFixed(3)} ${to.y.toFixed(3)} L ${head.right.x.toFixed(3)} ${head.right.y.toFixed(3)}`
+  ].join(" "));
+  headPath.setAttribute("class", `board-arrow-head ${colorName}${arrow.preview ? " preview" : ""}`);
+  headPath.setAttribute("stroke", color);
+  svg.appendChild(headPath);
 }
 
 function appendCircleElement(svg, circle) {
@@ -1823,11 +1941,8 @@ function arrowHeadPoints(from, tip) {
 
   return {
     base,
-    points: [
-      tip,
-      { x: base.x + nx * width / 2, y: base.y + ny * width / 2 },
-      { x: base.x - nx * width / 2, y: base.y - ny * width / 2 }
-    ]
+    left: { x: base.x + nx * width / 2, y: base.y + ny * width / 2 },
+    right: { x: base.x - nx * width / 2, y: base.y - ny * width / 2 }
   };
 }
 
@@ -3741,6 +3856,7 @@ function normalizeLobby(lobby) {
 function normalizeRoom(room) {
   if (!room || typeof room !== "object") return null;
   const players = room.players && typeof room.players === "object" ? room.players : {};
+  const profiles = room.profiles && typeof room.profiles === "object" ? room.profiles : {};
   return {
     id: String(room.id || ""),
     name: String(room.name || "Table"),
@@ -3752,12 +3868,18 @@ function normalizeRoom(room) {
       black: Boolean(players.black),
       spectators: Number(players.spectators) || 0
     },
+    profiles: {
+      white: normalizeProfile(profiles.white, "white"),
+      black: normalizeProfile(profiles.black, "black")
+    },
     createdAt: Number(room.createdAt) || Date.now()
   };
 }
 
 function normalizeChallenge(challenge) {
   if (!challenge || typeof challenge !== "object") return null;
+  const players = challenge.players && typeof challenge.players === "object" ? challenge.players : {};
+  const profiles = challenge.profiles && typeof challenge.profiles === "object" ? challenge.profiles : {};
   return {
     id: String(challenge.id || ""),
     roomId: String(challenge.roomId || ""),
@@ -3767,6 +3889,15 @@ function normalizeChallenge(challenge) {
     opponentRole: isPlayerRole(challenge.opponentRole) ? challenge.opponentRole : null,
     creatorId: String(challenge.creatorId || ""),
     creatorName: sanitizeName(challenge.creatorName || ""),
+    players: {
+      white: Boolean(players.white),
+      black: Boolean(players.black),
+      spectators: Number(players.spectators) || 0
+    },
+    profiles: {
+      white: normalizeProfile(profiles.white, "white"),
+      black: normalizeProfile(profiles.black, "black")
+    },
     createdAt: Number(challenge.createdAt) || Date.now()
   };
 }

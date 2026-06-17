@@ -392,6 +392,10 @@ function roomSummary(room) {
         black: Boolean(players.black),
         spectators: Number(players.spectators) || 0
       },
+      profiles: {
+        white: players.profiles.white,
+        black: players.profiles.black
+      },
       createdAt: room.createdAt
     };
   });
@@ -402,7 +406,27 @@ function lobbyState() {
 
   return {
     rooms: Array.from(rooms.values()).filter(shouldShowRoomInLobby).map(roomSummary),
-    challenges: Array.from(challenges.values()).map((challenge) => ({ ...challenge }))
+    challenges: Array.from(challenges.values()).map(challengeSummary)
+  };
+}
+
+function challengeSummary(challenge) {
+  const room = rooms.get(challenge.roomId);
+  const creator = clients.get(challenge.creatorId);
+  const players = room ? withRoom(room, () => getPlayersState()) : null;
+
+  return {
+    ...challenge,
+    creatorName: creator && creator.name ? creator.name : challenge.creatorName,
+    players: players ? {
+      white: Boolean(players.white),
+      black: Boolean(players.black),
+      spectators: Number(players.spectators) || 0
+    } : null,
+    profiles: players ? {
+      white: players.profiles.white,
+      black: players.profiles.black
+    } : null
   };
 }
 
@@ -2169,6 +2193,7 @@ function handleProfile(client, message) {
   }
 
   broadcast({ type: "players", players: getPlayersState() });
+  broadcastLobby();
 }
 
 function handleChat(client, message) {
