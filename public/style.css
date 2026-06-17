@@ -148,6 +148,28 @@ h1 {
   gap: 14px;
 }
 
+body.lobby-only .arena-layout {
+  grid-template-columns: minmax(280px, 520px);
+  justify-content: center;
+}
+
+body.lobby-only .board-panel,
+body.lobby-only .live-strip,
+body.lobby-only .chat-card,
+body.lobby-only .status-card,
+body.lobby-only .profile-card,
+body.lobby-only .history-card {
+  display: none;
+}
+
+body.lobby-only .side-panel {
+  width: min(100%, 520px);
+}
+
+body:not(.lobby-only) .lobby-card {
+  display: none;
+}
+
 /* 4. Header and Status */
 .button {
   min-height: 44px;
@@ -337,6 +359,31 @@ h1 {
   width: 16px;
   height: 16px;
   accent-color: var(--gold);
+}
+
+.quick-settings {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.mini-control {
+  min-width: 0;
+  min-height: 30px;
+  padding: 5px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.045);
+  font-size: 0.72rem;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.mini-control:hover {
+  border-color: rgba(76, 224, 229, 0.36);
+  color: #dffcff;
+  background: rgba(76, 224, 229, 0.09);
 }
 
 .error-box {
@@ -1315,7 +1362,7 @@ h1 {
 
 .lobby-card {
   display: grid;
-  gap: 8px;
+  gap: 12px;
   order: -5;
 }
 
@@ -1408,13 +1455,15 @@ h1 {
   cursor: default;
 }
 
+.table-form,
 .challenge-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-  gap: 7px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
   align-items: end;
 }
 
+.table-form label,
 .challenge-form label {
   display: grid;
   gap: 4px;
@@ -1424,6 +1473,8 @@ h1 {
   text-transform: uppercase;
 }
 
+.table-form input,
+.table-form select,
 .challenge-form input,
 .challenge-form select {
   min-width: 0;
@@ -1436,15 +1487,52 @@ h1 {
   font: inherit;
 }
 
+.table-form button {
+  grid-column: 1 / -1;
+}
+
+.table-time-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius);
+  background: rgba(6, 12, 21, 0.62);
+}
+
+.table-time-input input {
+  border: 0;
+  background: transparent;
+}
+
+.table-time-input span {
+  padding-right: 10px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.lobby-waiting {
+  min-height: 32px;
+  padding: 8px 10px;
+  border: 1px solid rgba(246, 196, 83, 0.24);
+  border-radius: 6px;
+  color: #fff4ca;
+  background: rgba(246, 196, 83, 0.1);
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
 .lobby-list {
   display: grid;
-  gap: 4px;
+  gap: 6px;
 }
 
 .lobby-row {
-  min-height: 30px;
+  min-height: 42px;
   padding: 7px 8px;
-  border-radius: 5px;
+  border-radius: 6px;
   background: rgba(255, 255, 255, 0.04);
 }
 
@@ -1494,6 +1582,23 @@ h1 {
 .lobby-row button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.table-row {
+  display: grid;
+  grid-template-columns: minmax(70px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.table-cadence {
+  color: var(--ink);
+  font-size: 0.94rem;
+}
+
+.table-color {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 850;
 }
 
 .chat-head {
@@ -2367,11 +2472,20 @@ body.performance-mode .promotion-choice img {
   }
 
   .board-panel,
+  .lobby-card,
   .status-card,
   .profile-card,
   .history-card,
   .chat-card {
     padding: 10px;
+  }
+
+  .table-form {
+    grid-template-columns: 1fr;
+  }
+
+  .table-row {
+    grid-template-columns: minmax(60px, auto) minmax(0, 1fr) auto;
   }
 
   .board-head {

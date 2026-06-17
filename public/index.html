@@ -6,17 +6,12 @@
   <title>Chess UltraBullet</title>
   <link rel="stylesheet" href="/style.css">
 </head>
-<body>
+<body class="lobby-only">
   <div class="app">
     <header class="topbar">
       <div>
         <p class="eyebrow">Duel mental en direct</p>
         <h1>Chess UltraBullet</h1>
-      </div>
-      <div class="top-actions" aria-label="Commandes">
-        <button id="orientationBtn" class="button secondary" type="button">Inverser l'echiquier</button>
-        <button id="soundToggleBtn" class="button secondary" type="button" aria-pressed="true">Sons actives</button>
-        <button id="takebackBtn" class="button secondary" type="button">Reprendre coup</button>
       </div>
     </header>
 
@@ -41,7 +36,7 @@
             </div>
             <div class="ready-actions">
               <button id="readyBtn" class="button primary ready-button" type="button">Pret a jouer</button>
-              <button id="newGameBtn" class="button secondary" type="button">Nouvelle partie</button>
+              <button id="newGameBtn" class="button secondary" type="button" hidden>Rematch</button>
             </div>
           </div>
         </div>
@@ -72,7 +67,7 @@
                 <i id="blackClockGauge" class="clock-gauge" aria-hidden="true"></i>
               </div>
             </div>
-            <form id="clockForm" class="clock-form">
+            <form id="clockForm" class="clock-form" hidden>
               <label id="clockModeLabel" for="clockInput">Temps initial</label>
               <input id="clockInput" type="number" min="1" max="600" step="1" value="60" inputmode="decimal">
               <select id="clockTargetSelect" hidden>
@@ -90,6 +85,11 @@
               <input id="promotionChoiceToggle" type="checkbox">
               <span>Choisir la promotion</span>
             </label>
+            <div class="quick-settings" aria-label="Reglages rapides">
+              <button id="orientationBtn" class="mini-control" type="button">Inverser</button>
+              <button id="soundToggleBtn" class="mini-control" type="button" aria-pressed="true">Sons actives</button>
+              <button id="takebackBtn" class="mini-control" type="button">Reprendre</button>
+            </div>
           </div>
 
           <div id="boardColumn" class="board-column">
@@ -131,31 +131,16 @@
       <aside class="side-panel" aria-label="Statut de partie">
         <section class="lobby-card">
           <div class="lobby-head">
-            <h2>Table</h2>
-            <button id="lobbyHomeBtn" class="lobby-home-btn" type="button">Table principale</button>
+            <h2>Tables</h2>
+            <button id="lobbyHomeBtn" class="lobby-home-btn" type="button" hidden>Quitter</button>
           </div>
-          <div class="lobby-current">
-            <span class="lobby-current-label">Table actuelle</span>
-            <strong id="roomText">Table principale</strong>
-            <span id="lobbyHint">En attente des joueurs</span>
-          </div>
-          <div class="lobby-seat-grid" aria-label="Sieges">
-            <div>
-              <span>Blancs</span>
-              <strong id="lobbyWhiteSeat">Libre</strong>
-            </div>
-            <div>
-              <span>Noirs</span>
-              <strong id="lobbyBlackSeat">Libre</strong>
-            </div>
-            <div>
-              <span>Obs.</span>
-              <strong id="lobbySpectatorSeat">0</strong>
-            </div>
-          </div>
-          <div class="lobby-section-title">Créer un défi</div>
-          <form id="challengeForm" class="challenge-form">
-            <label>Cadence <input id="challengeTimeInput" type="number" min="1" max="600" step="1" value="60" inputmode="numeric"></label>
+          <form id="challengeForm" class="table-form">
+            <label>Cadence
+              <span class="table-time-input">
+                <input id="challengeTimeInput" type="number" min="1" max="600" step="1" value="60" inputmode="numeric">
+                <span>s</span>
+              </span>
+            </label>
             <label>Couleur
               <select id="challengeColorSelect">
                 <option value="random">Aleatoire</option>
@@ -163,12 +148,10 @@
                 <option value="black">Noirs</option>
               </select>
             </label>
-            <button class="button secondary" type="submit">Créer</button>
+            <button class="button primary" type="submit">S'asseoir</button>
           </form>
-          <div class="lobby-section-title">Défis ouverts</div>
-          <div id="challengeList" class="lobby-list" aria-live="polite"></div>
-          <div class="lobby-section-title">Tables</div>
-          <div id="roomList" class="lobby-list" aria-live="polite"></div>
+          <div id="lobbyWaiting" class="lobby-waiting" hidden>En attente d'un adversaire.</div>
+          <div id="tableList" class="lobby-list" aria-live="polite"></div>
         </section>
 
         <section class="chat-card">

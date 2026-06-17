@@ -333,7 +333,7 @@ function handleSocketMessage(message) {
     handleOfficialStateEffects(previousState, gameState, data.type === "resetDone");
     trySendNextPremove();
     if (data.type === "resetDone") {
-      showError("Nouvelle partie lancée.");
+      showError("Rematch lance.");
     }
     return;
   }
@@ -471,6 +471,7 @@ function sendIntentThrottled(intent, immediate = false) {
 }
 
 function renderApp() {
+  renderLayoutMode();
   renderStatus();
   renderReadyControls();
   renderCountdownOverlay();
@@ -490,6 +491,16 @@ function renderApp() {
   renderArrows();
   scheduleIntentRender();
   scheduleClockRender();
+}
+
+function renderLayoutMode() {
+  document.body.classList.toggle("lobby-only", !shouldShowGameArea());
+}
+
+function shouldShowGameArea() {
+  if (hasGameStarted() || gameState.gameOver || isCountdownActive()) return true;
+  if (!currentRoom || currentRoom.id === MAIN_ROOM_ID) return false;
+  return Boolean(playersState.white && playersState.black);
 }
 
 function renderBoard() {
@@ -683,8 +694,12 @@ function isAddTimeMode() {
 }
 
 function renderGameActionButton() {
-  if (!els.newGameBtn) return;
-  els.newGameBtn.textContent = "Nouvelle partie";
+  if (els.newGameBtn) {
+    const canRematch = isPlayerRole(myRole) && gameState.gameOver;
+    els.newGameBtn.hidden = !canRematch;
+    els.newGameBtn.disabled = !canRematch;
+    els.newGameBtn.textContent = "Rematch";
+  }
 
   const canUseGameActions = isPlayerRole(myRole) && !gameState.gameOver;
   if (els.takebackBtn) {
@@ -708,7 +723,7 @@ function renderReadyControls() {
   const myReady = isPlayerRole(myRole) && Boolean(ready[myRole]);
   const readyCount = Number(Boolean(ready.white)) + Number(Boolean(ready.black));
 
-  els.readyBtn.hidden = false;
+  els.readyBtn.hidden = gameState.gameOver;
   els.readyBtn.disabled = !isPlayerRole(myRole) || gameState.gameOver || started || countdownActive;
   els.readyBtn.textContent = countdownActive
     ? "Depart..."
@@ -727,7 +742,7 @@ function renderReadyControls() {
   }
 
   if (gameState.gameOver) {
-    els.readyStatus.textContent = "Nouvelle partie requise";
+    els.readyStatus.textContent = "Rematch disponible";
     return;
   }
 
@@ -1408,124 +1423,80 @@ function renderAvatarChoices() {
 }
 
 function renderLobby() {
-  if (!els.challengeList || !els.roomList) return;
+  if (!els.tableList) return;
+
   renderLobbyStaticLabels();
 
-  const currentName = currentRoom ? currentRoom.name : "Lobby";
-  const currentStatus = currentRoom && currentRoom.status === "waiting" ? "en attente" : "active";
-  const players = currentRoom && currentRoom.players ? currentRoom.players : {};
-  setText(els.roomText, `${currentName} (${currentStatus})`);
-  setText(els.lobbyWhiteSeat, players.white ? "Occupe" : "Libre");
-  setText(els.lobbyBlackSeat, players.black ? "Occupe" : "Libre");
-  setText(els.lobbySpectatorSeat, String(Number(players.spectators) || 0));
-  setText(els.lobbyHint, lobbyStatusHint(currentRoom));
-  if (els.lobbyHomeBtn) {
-    const onMainRoom = Boolean(currentRoom && currentRoom.id === MAIN_ROOM_ID);
-    els.lobbyHomeBtn.disabled = onMainRoom;
-    els.lobbyHomeBtn.textContent = onMainRoom ? "Table principale" : "Retour lobby";
+  const waiting = isWaitingForOpponent();
+  if (els.lobbyWaiting) {
+    els.lobbyWaiting.hidden = !waiting;
+    els.lobbyWaiting.textContent = "Table ouverte. En attente d'un adversaire.";
   }
-  els.challengeList.textContent = "";
-  els.roomList.textContent = "";
 
-  const challenges = Array.isArray(lobbyStateData.challenges) ? lobbyStateData.challenges : [];
-  const rooms = Array.isArray(lobbyStateData.rooms) ? lobbyStateData.rooms : [];
+  if (els.lobbyHomeBtn) {
+    const awayFromLobby = Boolean(currentRoom && currentRoom.id !== MAIN_ROOM_ID);
+    els.lobbyHomeBtn.hidden = !awayFromLobby;
+    els.lobbyHomeBtn.textContent = waiting ? "Annuler" : "Quitter";
+  }
 
-  if (!challenges.length) {
+  els.tableList.textContent = "";
+  const tables = openLobbyTables();
+
+  if (!tables.length) {
     const empty = document.createElement("div");
     empty.className = "lobby-empty";
-    empty.textContent = "Aucun defi.";
-    els.challengeList.appendChild(empty);
-  } else {
-    challenges.forEach((challenge) => {
-      const row = document.createElement("div");
-      row.className = "lobby-row";
-
-      const text = document.createElement("span");
-      text.className = "lobby-main";
-      const colorText = challenge.opponentRole
-        ? `cherche ${COLOR_LABELS[challenge.opponentRole]}`
-        : challenge.color === "random"
-          ? "couleur aleatoire"
-          : COLOR_LABELS[challenge.color] || challenge.color;
-      const creator = challenge.creatorName ? ` par ${challenge.creatorName}` : "";
-      const title = document.createElement("strong");
-      title.textContent = `${challenge.seconds}s - ${colorText}`;
-      const meta = document.createElement("span");
-      meta.className = "lobby-meta";
-      meta.textContent = challenge.creatorId === clientId ? "Ton defi attend un adversaire" : `Cree${creator}`;
-      text.appendChild(title);
-      text.appendChild(meta);
-
-      const button = document.createElement("button");
-      button.type = "button";
-      button.dataset.challengeId = challenge.id;
-      button.textContent = challenge.creatorId === clientId ? "En attente" : "Rejoindre";
-      button.disabled = challenge.creatorId === clientId;
-
-      row.appendChild(text);
-      row.appendChild(button);
-      els.challengeList.appendChild(row);
-    });
+    empty.textContent = "Aucune table ouverte.";
+    els.tableList.appendChild(empty);
+    return;
   }
 
-  rooms.forEach((room) => {
+  tables.forEach((table) => {
     const row = document.createElement("div");
-    row.className = "lobby-row";
-    row.classList.toggle("is-current", currentRoom && room.id === currentRoom.id);
+    row.className = "lobby-row table-row";
+    row.classList.toggle("is-current", table.creatorId === clientId);
 
-    const text = document.createElement("span");
-    text.className = "lobby-main";
-    const white = room.players && room.players.white ? "B" : "-";
-    const black = room.players && room.players.black ? "N" : "-";
-    const spectators = room.players ? room.players.spectators : 0;
-    const title = document.createElement("strong");
-    title.textContent = room.name;
-    const meta = document.createElement("span");
-    meta.className = "lobby-meta";
-    meta.textContent = `Sieges ${white}/${black} - ${spectators} obs.`;
-    text.appendChild(title);
-    text.appendChild(meta);
+    const cadence = document.createElement("strong");
+    cadence.className = "table-cadence";
+    cadence.textContent = `${table.seconds}s`;
+
+    const color = document.createElement("span");
+    color.className = "table-color";
+    color.textContent = tableColorLabel(table);
 
     const button = document.createElement("button");
     button.type = "button";
-    button.dataset.roomId = room.id;
-    const hasOpenSeat = !(room.players && room.players.white) || !(room.players && room.players.black);
-    button.textContent = currentRoom && room.id === currentRoom.id
-      ? "Ici"
-      : room.id === MAIN_ROOM_ID
-        ? "Retour"
-        : hasOpenSeat
-          ? "Rejoindre"
-          : "Observer";
-    button.disabled = currentRoom && room.id === currentRoom.id;
+    button.dataset.challengeId = table.id;
+    button.textContent = table.creatorId === clientId ? "En attente" : "Rejoindre";
+    button.disabled = table.creatorId === clientId;
 
-    row.appendChild(text);
+    row.appendChild(cadence);
+    row.appendChild(color);
     row.appendChild(button);
-    els.roomList.appendChild(row);
+    els.tableList.appendChild(row);
   });
 }
 
 function renderLobbyStaticLabels() {
-  if (!els.lobbyCard) return;
-  const titles = els.lobbyCard.querySelectorAll(".lobby-section-title");
-  const labels = ["Creer une table", "Defis a rejoindre", "Tables visibles"];
-  titles.forEach((title, index) => {
-    if (labels[index]) title.textContent = labels[index];
-  });
   const submit = els.challengeForm ? els.challengeForm.querySelector('button[type="submit"]') : null;
-  if (submit) submit.textContent = "Creer";
+  if (submit) submit.textContent = "S'asseoir";
 }
 
-function lobbyStatusHint(room) {
-  if (!room) return "Choisis ou cree une table.";
-  const players = room.players || {};
-  const hasWhite = Boolean(players.white);
-  const hasBlack = Boolean(players.black);
-  if (!hasWhite && !hasBlack) return "Aucun joueur assis.";
-  if (!hasWhite) return "Place Blancs libre.";
-  if (!hasBlack) return "Place Noirs libre.";
-  if (!hasGameStarted()) return "Deux joueurs assis, depart au bouton Pret.";
-  return "Partie en cours.";
+function openLobbyTables() {
+  const challenges = Array.isArray(lobbyStateData.challenges) ? lobbyStateData.challenges : [];
+  return challenges
+    .slice()
+    .sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
+}
+
+function tableColorLabel(table) {
+  if (!table || table.color === "random") return "Aleatoire";
+  return COLOR_LABELS[table.color] || "Aleatoire";
+}
+
+function isWaitingForOpponent() {
+  if (!currentRoom || currentRoom.id === MAIN_ROOM_ID) return false;
+  if (playersState.white && playersState.black) return false;
+  return openLobbyTables().some((table) => table.creatorId === clientId && table.roomId === currentRoom.id);
 }
 
 function renderHistory() {
@@ -2714,11 +2685,13 @@ function cacheElements() {
   els.lobbyBlackSeat = document.getElementById("lobbyBlackSeat");
   els.lobbySpectatorSeat = document.getElementById("lobbySpectatorSeat");
   els.lobbyHomeBtn = document.getElementById("lobbyHomeBtn");
+  els.lobbyWaiting = document.getElementById("lobbyWaiting");
   els.challengeForm = document.getElementById("challengeForm");
   els.challengeTimeInput = document.getElementById("challengeTimeInput");
   els.challengeColorSelect = document.getElementById("challengeColorSelect");
   els.challengeList = document.getElementById("challengeList");
   els.roomList = document.getElementById("roomList");
+  els.tableList = document.getElementById("tableList");
   els.opponentAvatar = document.getElementById("opponentAvatar");
   els.opponentTitle = document.getElementById("opponentTitle");
   els.opponentText = document.getElementById("opponentText");
@@ -2764,7 +2737,8 @@ function bindUi() {
   els.board.addEventListener("pointerleave", handlePointerLeave, { passive: false });
   els.board.addEventListener("contextmenu", (event) => event.preventDefault());
 
-  els.newGameBtn.addEventListener("click", () => {
+  if (els.newGameBtn) {
+    els.newGameBtn.addEventListener("click", () => {
     if (myRole === "spectator") {
       showError("Les spectateurs ne peuvent pas réinitialiser la partie.");
       return;
@@ -2775,10 +2749,13 @@ function bindUi() {
       return;
     }
 
-    sendMessage({ type: "reset" });
-  });
+      sendMessage({ type: "reset" });
+    });
+  }
 
-  els.orientationBtn.addEventListener("click", flipOrientation);
+  if (els.orientationBtn) {
+    els.orientationBtn.addEventListener("click", flipOrientation);
+  }
 
   els.readyBtn.addEventListener("click", () => {
     if (!isPlayerRole(myRole)) {
@@ -2790,13 +2767,15 @@ function bindUi() {
     sendMessage({ type: "readyToPlay" });
   });
 
-  els.takebackBtn.addEventListener("click", () => {
+  if (els.takebackBtn) {
+    els.takebackBtn.addEventListener("click", () => {
     if (!isPlayerRole(myRole)) {
       showError(myRole === "spectator" ? "Les spectateurs ne peuvent pas demander de reprise." : "Connexion au serveur...");
       return;
     }
-    sendMessage({ type: "takebackRequest" });
-  });
+      sendMessage({ type: "takebackRequest" });
+    });
+  }
 
   els.drawBtn.addEventListener("click", () => {
     if (!isPlayerRole(myRole)) {
@@ -2843,31 +2822,39 @@ function bindUi() {
     sendChatMessage();
   });
 
-  els.challengeForm.addEventListener("submit", (event) => {
+  if (els.challengeForm) {
+    els.challengeForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const seconds = Number(els.challengeTimeInput ? els.challengeTimeInput.value : 60);
-    sendMessage({
-      type: "createChallenge",
-      seconds,
-      color: els.challengeColorSelect ? els.challengeColorSelect.value : "random"
+      sendMessage({
+        type: "createChallenge",
+        seconds,
+        color: els.challengeColorSelect ? els.challengeColorSelect.value : "random"
+      });
     });
-  });
+  }
 
-  els.lobbyHomeBtn.addEventListener("click", () => {
-    sendMessage({ type: "watchRoom", roomId: MAIN_ROOM_ID });
-  });
+  if (els.lobbyHomeBtn) {
+    els.lobbyHomeBtn.addEventListener("click", () => {
+      sendMessage({ type: "watchRoom", roomId: MAIN_ROOM_ID });
+    });
+  }
 
-  els.challengeList.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-challenge-id]");
-    if (!button) return;
-    sendMessage({ type: "acceptChallenge", challengeId: button.dataset.challengeId });
-  });
+  if (els.tableList) {
+    els.tableList.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-challenge-id]");
+      if (!button) return;
+      sendMessage({ type: "acceptChallenge", challengeId: button.dataset.challengeId });
+    });
+  }
 
-  els.roomList.addEventListener("click", (event) => {
+  if (els.roomList) {
+    els.roomList.addEventListener("click", (event) => {
     const button = event.target.closest("[data-room-id]");
     if (!button) return;
     sendMessage({ type: "watchRoom", roomId: button.dataset.roomId });
-  });
+    });
+  }
 
   els.clockForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -2879,11 +2866,13 @@ function bindUi() {
     submitProfile();
   });
 
-  els.soundToggleBtn.addEventListener("click", () => {
+  if (els.soundToggleBtn) {
+    els.soundToggleBtn.addEventListener("click", () => {
     soundEnabled = !soundEnabled;
     if (soundEnabled) resumeAudioContext();
     renderSoundToggle();
-  });
+    });
+  }
 
   if (els.promotionChoiceToggle) {
     els.promotionChoiceToggle.addEventListener("change", () => {
