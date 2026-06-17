@@ -274,9 +274,32 @@ h1 {
 
 .ready-panel {
   display: grid;
-  justify-items: end;
-  gap: 6px;
-  min-width: min(220px, 42vw);
+  grid-template-columns: minmax(120px, auto) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: min(430px, 48vw);
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius);
+  background: rgba(6, 12, 21, 0.42);
+}
+
+.ready-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ready-copy > span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.ready-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .ready-button {
@@ -286,9 +309,10 @@ h1 {
 
 .ready-status {
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: 0.82rem;
   font-weight: 850;
-  text-align: right;
+  text-align: left;
+  overflow-wrap: anywhere;
 }
 
 .ready-status.is-ready {
@@ -297,6 +321,22 @@ h1 {
 
 .ready-status.is-countdown {
   color: var(--gold);
+}
+
+.promotion-mode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.promotion-mode input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--gold);
 }
 
 .error-box {
@@ -1296,11 +1336,56 @@ h1 {
 }
 
 .lobby-current {
-  padding: 7px 8px;
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
   border: 1px solid rgba(76, 224, 229, 0.18);
   border-radius: 5px;
   color: #dffcff;
   background: rgba(76, 224, 229, 0.08);
+}
+
+.lobby-current strong {
+  color: var(--ink);
+  font-size: 0.95rem;
+}
+
+.lobby-current-label,
+.lobby-current span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.lobby-seat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.lobby-seat-grid > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(6, 12, 21, 0.42);
+}
+
+.lobby-seat-grid span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.lobby-seat-grid strong {
+  overflow: hidden;
+  color: rgba(236, 245, 247, 0.94);
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .lobby-section-title {
@@ -1358,7 +1443,7 @@ h1 {
 
 .lobby-row {
   min-height: 30px;
-  padding: 4px 5px;
+  padding: 7px 8px;
   border-radius: 5px;
   background: rgba(255, 255, 255, 0.04);
 }
@@ -1374,7 +1459,26 @@ h1 {
   font-size: 0.78rem;
   font-weight: 800;
   text-overflow: ellipsis;
+  white-space: normal;
+}
+
+.lobby-row .lobby-main {
+  display: grid;
+  gap: 2px;
+}
+
+.lobby-row .lobby-main strong {
+  overflow: hidden;
+  color: rgba(236, 245, 247, 0.96);
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.lobby-row .lobby-meta {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 750;
 }
 
 .lobby-row button {
@@ -1488,8 +1592,7 @@ h1 {
   position: fixed;
   inset: 0;
   z-index: 80;
-  display: grid;
-  place-items: center;
+  display: block;
   padding: 20px;
   background: rgba(3, 7, 14, 0.66);
   backdrop-filter: blur(12px);
@@ -1500,6 +1603,10 @@ h1 {
 }
 
 .promotion-dialog {
+  position: absolute;
+  left: var(--promotion-left, 50%);
+  top: var(--promotion-top, 50%);
+  transform: translate(-50%, -50%);
   width: min(420px, 100%);
   padding: 16px;
   border: 1px solid var(--line);
@@ -2273,12 +2380,13 @@ body.performance-mode .promotion-choice img {
   }
 
   .ready-panel {
+    grid-template-columns: 1fr;
     min-width: 0;
-    justify-items: stretch;
   }
 
-  .ready-status {
-    text-align: left;
+  .ready-actions {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 
   .board-wrap {

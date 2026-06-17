@@ -87,6 +87,7 @@ let lastSoundMoveKey = null;
 let lastConfettiKey = null;
 let boardSize = 730;
 let boardTheme = "classic";
+let choosePromotion = false;
 let pendingLocalMove = null;
 let boardArrows = [];
 let arrowDragState = createEmptyArrowDragState();
@@ -110,6 +111,8 @@ let lastSentIntentSnapshot = null;
 let lastClockText = { white: "", black: "" };
 let lastRenderedBoardKey = "";
 let lastClockControlMode = "";
+let lastCountdownSoundKey = "";
+let lastCountdownGoKey = "";
 
 const remoteDom = {
   cursors: new Map(),
@@ -280,6 +283,7 @@ function handleSocketMessage(message) {
 
   if (data.type === "gameState" || data.type === "resetDone") {
     const previousState = gameState;
+    const dragSnapshot = snapshotActiveDrag();
     pendingLocalMove = null;
     pendingPremoveAttempt = null;
     takebackOffer = null;
@@ -316,7 +320,12 @@ function handleSocketMessage(message) {
       selectedName = currentProfileName();
       syncMatchScorePair();
     }
-    resetLocalDrag();
+    const keepDrag = data.type !== "resetDone" && canKeepDragAfterState(dragSnapshot);
+    if (keepDrag) {
+      restoreDragAfterState(dragSnapshot);
+    } else {
+      resetLocalDrag();
+    }
     if (!gameState.gameOver) {
       viewingMoveIndex = null;
     }
@@ -477,6 +486,7 @@ function renderApp() {
   renderMatchScore();
   applyBoardPreferences();
   renderSoundToggle();
+  renderPromotionMode();
   renderArrows();
   scheduleIntentRender();
   scheduleClockRender();
@@ -753,7 +763,9 @@ function renderCountdownOverlay() {
     return;
   }
 
-  els.countdownText.textContent = String(countdownNumber());
+  const number = countdownNumber();
+  els.countdownText.textContent = String(number);
+  playCountdownTickIfNeeded(number);
   scheduleCountdownRender();
 }
 
@@ -784,6 +796,14 @@ function countdownRemainingMs() {
 function countdownNumber() {
   if (!isCountdownActive()) return 0;
   return clamp(Math.ceil(countdownRemainingMs() / 1000), 1, 3);
+}
+
+function playCountdownTickIfNeeded(number) {
+  const countdown = gameState.countdown || createDefaultCountdownState();
+  const key = `${countdown.startedAt || ""}:${number}`;
+  if (!countdown.active || key === lastCountdownSoundKey) return;
+  lastCountdownSoundKey = key;
+  playRaceStartSound(number);
 }
 
 function scheduleClockRender() {
@@ -932,6 +952,20 @@ function submitProfile() {
 
 function handleOfficialStateEffects(previousState, nextState, isReset) {
   if (isReset) return;
+
+  const countdownJustFinished = previousState
+    && previousState.countdown
+    && previousState.countdown.active
+    && (!nextState.countdown || !nextState.countdown.active)
+    && nextState.clock
+    && nextState.clock.started;
+  if (countdownJustFinished) {
+    const goKey = `${previousState.countdown.startedAt || ""}:go`;
+    if (goKey !== lastCountdownGoKey) {
+      lastCountdownGoKey = goKey;
+      playRaceStartSound("go");
+    }
+  }
 
   const move = nextState.lastMove || null;
   const moveKey = move ? `${move.color}:${move.from}:${move.to}:${move.timestamp || nextState.moveHistory.length}` : "";
@@ -1135,6 +1169,11 @@ function renderSoundToggle() {
   els.soundToggleBtn.setAttribute("aria-pressed", soundEnabled ? "true" : "false");
 }
 
+function renderPromotionMode() {
+  if (!els.promotionChoiceToggle) return;
+  els.promotionChoiceToggle.checked = Boolean(choosePromotion);
+}
+
 function applyBoardPreferences() {
   const maxBoardSize = currentBoardSizeMax();
   boardSize = clamp(boardSize, BOARD_SIZE_MIN, maxBoardSize);
@@ -1174,18 +1213,19 @@ function playSound(kind) {
   if (!soundEnabled) return;
 
   try {
-    audioContext = audioContext || new (window.AudioContext || window.webkitAudioContext)();
-    const now = audioContext.currentTime;
-    const master = audioContext.createGain();
+    const context = ensureAudioContext();
+    if (!context) return;
+    const now = context.currentTime;
+    const master = context.createGain();
     master.gain.setValueAtTime(0.0001, now);
     master.gain.exponentialRampToValueAtTime(0.055, now + 0.015);
     master.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
-    master.connect(audioContext.destination);
+    master.connect(context.destination);
 
     const notes = soundNotes(kind);
     notes.forEach((note, index) => {
-      const osc = audioContext.createOscillator();
-      const gain = audioContext.createGain();
+      const osc = context.createOscillator();
+      const gain = context.createGain();
       const start = now + index * 0.045;
       osc.type = kind === "mate" ? "triangle" : "sine";
       osc.frequency.setValueAtTime(note, start);
@@ -1198,6 +1238,68 @@ function playSound(kind) {
     });
   } catch (error) {
     console.warn("[audio] unavailable", error);
+  }
+}
+
+function playRaceStartSound(step) {
+  if (!soundEnabled) return;
+
+  try {
+    const context = ensureAudioContext();
+    if (!context) return;
+    const now = context.currentTime;
+    const isGo = step === "go";
+    const duration = isGo ? 0.52 : 0.18;
+    const frequency = isGo ? 880 : 440;
+    const master = context.createGain();
+    master.gain.setValueAtTime(0.0001, now);
+    master.gain.exponentialRampToValueAtTime(isGo ? 0.09 : 0.065, now + 0.018);
+    master.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    master.connect(context.destination);
+
+    const main = context.createOscillator();
+    const body = context.createOscillator();
+    main.type = "square";
+    body.type = "sawtooth";
+    main.frequency.setValueAtTime(frequency, now);
+    body.frequency.setValueAtTime(frequency / 2, now);
+    if (isGo) {
+      main.frequency.exponentialRampToValueAtTime(980, now + duration * 0.72);
+      body.frequency.exponentialRampToValueAtTime(540, now + duration * 0.72);
+    }
+    main.connect(master);
+    body.connect(master);
+    main.start(now);
+    body.start(now);
+    main.stop(now + duration);
+    body.stop(now + duration);
+  } catch (error) {
+    console.warn("[audio] unavailable", error);
+  }
+}
+
+function ensureAudioContext() {
+  try {
+    audioContext = audioContext || new (window.AudioContext || window.webkitAudioContext)();
+    resumeAudioContext();
+    return audioContext;
+  } catch (error) {
+    console.warn("[audio] unavailable", error);
+    return null;
+  }
+}
+
+function resumeAudioContext() {
+  if (!audioContext) {
+    try {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (error) {
+      return;
+    }
+  }
+
+  if (audioContext.state === "suspended" && audioContext.resume) {
+    audioContext.resume().catch(() => {});
   }
 }
 
@@ -1307,10 +1409,16 @@ function renderAvatarChoices() {
 
 function renderLobby() {
   if (!els.challengeList || !els.roomList) return;
+  renderLobbyStaticLabels();
 
   const currentName = currentRoom ? currentRoom.name : "Lobby";
   const currentStatus = currentRoom && currentRoom.status === "waiting" ? "en attente" : "active";
-  setText(els.roomText, `Table actuelle : ${currentName} (${currentStatus})`);
+  const players = currentRoom && currentRoom.players ? currentRoom.players : {};
+  setText(els.roomText, `${currentName} (${currentStatus})`);
+  setText(els.lobbyWhiteSeat, players.white ? "Occupe" : "Libre");
+  setText(els.lobbyBlackSeat, players.black ? "Occupe" : "Libre");
+  setText(els.lobbySpectatorSeat, String(Number(players.spectators) || 0));
+  setText(els.lobbyHint, lobbyStatusHint(currentRoom));
   if (els.lobbyHomeBtn) {
     const onMainRoom = Boolean(currentRoom && currentRoom.id === MAIN_ROOM_ID);
     els.lobbyHomeBtn.disabled = onMainRoom;
@@ -1333,13 +1441,20 @@ function renderLobby() {
       row.className = "lobby-row";
 
       const text = document.createElement("span");
+      text.className = "lobby-main";
       const colorText = challenge.opponentRole
         ? `cherche ${COLOR_LABELS[challenge.opponentRole]}`
         : challenge.color === "random"
           ? "couleur aleatoire"
           : COLOR_LABELS[challenge.color] || challenge.color;
       const creator = challenge.creatorName ? ` par ${challenge.creatorName}` : "";
-      text.textContent = `${challenge.seconds}s, ${colorText}${creator}`;
+      const title = document.createElement("strong");
+      title.textContent = `${challenge.seconds}s - ${colorText}`;
+      const meta = document.createElement("span");
+      meta.className = "lobby-meta";
+      meta.textContent = challenge.creatorId === clientId ? "Ton defi attend un adversaire" : `Cree${creator}`;
+      text.appendChild(title);
+      text.appendChild(meta);
 
       const button = document.createElement("button");
       button.type = "button";
@@ -1359,10 +1474,17 @@ function renderLobby() {
     row.classList.toggle("is-current", currentRoom && room.id === currentRoom.id);
 
     const text = document.createElement("span");
+    text.className = "lobby-main";
     const white = room.players && room.players.white ? "B" : "-";
     const black = room.players && room.players.black ? "N" : "-";
     const spectators = room.players ? room.players.spectators : 0;
-    text.textContent = `${room.name} (${white}/${black}, ${spectators} obs.)`;
+    const title = document.createElement("strong");
+    title.textContent = room.name;
+    const meta = document.createElement("span");
+    meta.className = "lobby-meta";
+    meta.textContent = `Sieges ${white}/${black} - ${spectators} obs.`;
+    text.appendChild(title);
+    text.appendChild(meta);
 
     const button = document.createElement("button");
     button.type = "button";
@@ -1381,6 +1503,29 @@ function renderLobby() {
     row.appendChild(button);
     els.roomList.appendChild(row);
   });
+}
+
+function renderLobbyStaticLabels() {
+  if (!els.lobbyCard) return;
+  const titles = els.lobbyCard.querySelectorAll(".lobby-section-title");
+  const labels = ["Creer une table", "Defis a rejoindre", "Tables visibles"];
+  titles.forEach((title, index) => {
+    if (labels[index]) title.textContent = labels[index];
+  });
+  const submit = els.challengeForm ? els.challengeForm.querySelector('button[type="submit"]') : null;
+  if (submit) submit.textContent = "Creer";
+}
+
+function lobbyStatusHint(room) {
+  if (!room) return "Choisis ou cree une table.";
+  const players = room.players || {};
+  const hasWhite = Boolean(players.white);
+  const hasBlack = Boolean(players.black);
+  if (!hasWhite && !hasBlack) return "Aucun joueur assis.";
+  if (!hasWhite) return "Place Blancs libre.";
+  if (!hasBlack) return "Place Noirs libre.";
+  if (!hasGameStarted()) return "Deux joueurs assis, depart au bouton Pret.";
+  return "Partie en cours.";
 }
 
 function renderHistory() {
@@ -1956,17 +2101,17 @@ function handlePointerUp(event) {
   if (to === from) {
     setLocalBoardHighlights({ hover: pointer.square, target: null, origin: null });
   } else if (wasPremove && to && shouldAskPromotion(wasDraggingPiece, to)) {
-    showPromotionDialog(wasDraggingPiece.color)
+    showPromotionDialog(wasDraggingPiece.color, to)
       .then((promotion) => enqueuePremove(from, to, promotion, wasDraggingPiece))
       .catch(() => showError("Promotion annulee."));
   } else if (wasPremove && to) {
-    enqueuePremove(from, to, null, wasDraggingPiece);
+    enqueuePremove(from, to, automaticPromotionFor(wasDraggingPiece, to), wasDraggingPiece);
   } else if (to && shouldAskPromotion(wasDraggingPiece, to)) {
-    showPromotionDialog(wasDraggingPiece.color)
+    showPromotionDialog(wasDraggingPiece.color, to)
       .then((promotion) => requestMove(from, to, promotion))
       .catch(() => showError("Promotion annulee."));
   } else if (to) {
-    requestMove(from, to);
+    requestMove(from, to, automaticPromotionFor(wasDraggingPiece, to));
   } else {
     showError("Coup impossible.");
   }
@@ -2124,6 +2269,7 @@ function enqueuePremove(from, to, promotion = null, piece = null) {
 
 function trySendNextPremove() {
   if (!premoveQueue.length) return;
+  if (dragState.active) return;
   if (!isPlayerRole(myRole) || gameState.gameOver || gameState.turn !== myRole) return;
   if (!hasGameStarted()) return;
 
@@ -2351,11 +2497,20 @@ function renderPremoveHighlights() {
 }
 
 function shouldAskPromotion(piece, to) {
+  return choosePromotion && isPromotionTargetFor(piece, to);
+}
+
+function automaticPromotionFor(piece, to) {
+  if (!isPromotionTargetFor(piece, to) || choosePromotion) return null;
+  return "Q";
+}
+
+function isPromotionTargetFor(piece, to) {
   if (!piece || piece.type !== "P" || !isValidSquare(to)) return false;
   return (piece.color === "white" && to.endsWith("8")) || (piece.color === "black" && to.endsWith("1"));
 }
 
-function showPromotionDialog(color) {
+function showPromotionDialog(color, targetSquare = null) {
   if (!els.promotionOverlay || !els.promotionChoices) {
     return Promise.resolve("Q");
   }
@@ -2382,10 +2537,33 @@ function showPromotionDialog(color) {
   });
 
   els.promotionOverlay.hidden = false;
+  positionPromotionDialog(targetSquare);
 
   return new Promise((resolve) => {
     pendingPromotionResolve = resolve;
   });
+}
+
+function positionPromotionDialog(targetSquare) {
+  if (!els.promotionOverlay || !targetSquare || !els.board) {
+    els.promotionOverlay.style.setProperty("--promotion-left", "50%");
+    els.promotionOverlay.style.setProperty("--promotion-top", "50%");
+    return;
+  }
+
+  const display = displayPositionForSquare(targetSquare);
+  const metrics = boardMetrics();
+  if (!display || !metrics.width || !metrics.height) return;
+
+  const boardRect = els.board.getBoundingClientRect();
+  const squareSize = metrics.width / 8;
+  const rawLeft = boardRect.left + metrics.left + display.col * squareSize + squareSize / 2;
+  const rawTop = boardRect.top + metrics.top + display.row * squareSize + squareSize / 2;
+  const left = clamp(rawLeft, 110, Math.max(110, window.innerWidth - 110));
+  const top = clamp(rawTop, 92, Math.max(92, window.innerHeight - 92));
+
+  els.promotionOverlay.style.setProperty("--promotion-left", `${left}px`);
+  els.promotionOverlay.style.setProperty("--promotion-top", `${top}px`);
 }
 
 function sendChatMessage() {
@@ -2442,6 +2620,46 @@ function resetLocalDrag() {
   setLocalBoardHighlights({ hover: null, target: null, origin: null });
 }
 
+function snapshotActiveDrag() {
+  if (!dragState.active || !dragState.grabbedPiece) return null;
+  return {
+    ...dragState,
+    grabbedPiece: { ...dragState.grabbedPiece }
+  };
+}
+
+function canKeepDragAfterState(snapshot) {
+  if (!snapshot || !snapshot.active || !snapshot.grabbedPiece) return false;
+  if (!isPlayerRole(myRole) || gameState.gameOver || !hasGameStarted()) return false;
+  if (!isValidSquare(snapshot.fromSquare)) return false;
+
+  const piece = gameState.board && gameState.board[snapshot.fromSquare];
+  return Boolean(piece
+    && piece.color === snapshot.grabbedPiece.color
+    && piece.type === snapshot.grabbedPiece.type
+    && piece.color === myRole);
+}
+
+function restoreDragAfterState(snapshot) {
+  dragState = {
+    ...snapshot,
+    premove: gameState.turn !== myRole,
+    grabbedPiece: { ...snapshot.grabbedPiece }
+  };
+  selectedPiece = {
+    square: dragState.fromSquare,
+    piece: dragState.grabbedPiece
+  };
+  document.body.classList.add("drag-lock");
+  document.body.classList.toggle("premove-drag", dragState.premove);
+  updateLocalDragGhost();
+  setLocalBoardHighlights({
+    hover: dragState.targetSquare,
+    target: dragState.targetSquare,
+    origin: dragState.fromSquare
+  });
+}
+
 function flipOrientation() {
   resetLocalDrag();
   boardOrientation = boardOrientation === "white" ? "black" : "white";
@@ -2483,12 +2701,18 @@ function cacheElements() {
   els.clockTargetSelect = document.getElementById("clockTargetSelect");
   els.clockUnitText = document.getElementById("clockUnitText");
   els.clockSubmitBtn = document.getElementById("clockSubmitBtn");
+  els.promotionChoiceToggle = document.getElementById("promotionChoiceToggle");
   els.soundToggleBtn = document.getElementById("soundToggleBtn");
   els.boardSizeInput = document.getElementById("boardSizeInput");
   els.boardThemeSelect = document.getElementById("boardThemeSelect");
   els.confettiLayer = document.getElementById("confettiLayer");
   els.premoveList = document.getElementById("premoveList");
+  els.lobbyCard = document.querySelector(".lobby-card");
   els.roomText = document.getElementById("roomText");
+  els.lobbyHint = document.getElementById("lobbyHint");
+  els.lobbyWhiteSeat = document.getElementById("lobbyWhiteSeat");
+  els.lobbyBlackSeat = document.getElementById("lobbyBlackSeat");
+  els.lobbySpectatorSeat = document.getElementById("lobbySpectatorSeat");
   els.lobbyHomeBtn = document.getElementById("lobbyHomeBtn");
   els.challengeForm = document.getElementById("challengeForm");
   els.challengeTimeInput = document.getElementById("challengeTimeInput");
@@ -2562,6 +2786,7 @@ function bindUi() {
       return;
     }
 
+    resumeAudioContext();
     sendMessage({ type: "readyToPlay" });
   });
 
@@ -2656,8 +2881,16 @@ function bindUi() {
 
   els.soundToggleBtn.addEventListener("click", () => {
     soundEnabled = !soundEnabled;
+    if (soundEnabled) resumeAudioContext();
     renderSoundToggle();
   });
+
+  if (els.promotionChoiceToggle) {
+    els.promotionChoiceToggle.addEventListener("change", () => {
+      choosePromotion = Boolean(els.promotionChoiceToggle.checked);
+      renderPromotionMode();
+    });
+  }
 
   els.boardSizeInput.addEventListener("input", () => {
     boardSize = clamp(Number(els.boardSizeInput.value), BOARD_SIZE_MIN, currentBoardSizeMax());

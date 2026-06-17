@@ -17,7 +17,6 @@
         <button id="orientationBtn" class="button secondary" type="button">Inverser l'echiquier</button>
         <button id="soundToggleBtn" class="button secondary" type="button" aria-pressed="true">Sons actives</button>
         <button id="takebackBtn" class="button secondary" type="button">Reprendre coup</button>
-        <button id="newGameBtn" class="button primary" type="button">Nouvelle partie</button>
       </div>
     </header>
 
@@ -36,8 +35,14 @@
             <p id="shortStatus" class="short-status">Connexion au serveur...</p>
           </div>
           <div class="ready-panel" aria-live="polite">
-            <button id="readyBtn" class="button primary ready-button" type="button">Pret a jouer</button>
-            <span id="readyStatus" class="ready-status">En attente des joueurs</span>
+            <div class="ready-copy">
+              <span>Depart</span>
+              <strong id="readyStatus" class="ready-status">En attente des joueurs</strong>
+            </div>
+            <div class="ready-actions">
+              <button id="readyBtn" class="button primary ready-button" type="button">Pret a jouer</button>
+              <button id="newGameBtn" class="button secondary" type="button">Nouvelle partie</button>
+            </div>
           </div>
         </div>
 
@@ -81,6 +86,10 @@
               <button id="drawBtn" class="button secondary" type="button">Proposer nulle</button>
               <button id="resignBtn" class="button secondary danger-action" type="button">Abandonner</button>
             </div>
+            <label class="promotion-mode">
+              <input id="promotionChoiceToggle" type="checkbox">
+              <span>Choisir la promotion</span>
+            </label>
           </div>
 
           <div id="boardColumn" class="board-column">
@@ -122,10 +131,28 @@
       <aside class="side-panel" aria-label="Statut de partie">
         <section class="lobby-card">
           <div class="lobby-head">
-            <h2>Lobby</h2>
+            <h2>Table</h2>
             <button id="lobbyHomeBtn" class="lobby-home-btn" type="button">Table principale</button>
           </div>
-          <div id="roomText" class="lobby-current">Table actuelle : Table principale</div>
+          <div class="lobby-current">
+            <span class="lobby-current-label">Table actuelle</span>
+            <strong id="roomText">Table principale</strong>
+            <span id="lobbyHint">En attente des joueurs</span>
+          </div>
+          <div class="lobby-seat-grid" aria-label="Sieges">
+            <div>
+              <span>Blancs</span>
+              <strong id="lobbyWhiteSeat">Libre</strong>
+            </div>
+            <div>
+              <span>Noirs</span>
+              <strong id="lobbyBlackSeat">Libre</strong>
+            </div>
+            <div>
+              <span>Obs.</span>
+              <strong id="lobbySpectatorSeat">0</strong>
+            </div>
+          </div>
           <div class="lobby-section-title">Créer un défi</div>
           <form id="challengeForm" class="challenge-form">
             <label>Cadence <input id="challengeTimeInput" type="number" min="1" max="600" step="1" value="60" inputmode="numeric"></label>
