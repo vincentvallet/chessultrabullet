@@ -388,7 +388,7 @@ body.lobby-only .profile-card .avatar-picker {
 
 .quick-settings {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -409,6 +409,12 @@ body.lobby-only .profile-card .avatar-picker {
   border-color: rgba(76, 224, 229, 0.36);
   color: #dffcff;
   background: rgba(76, 224, 229, 0.09);
+}
+
+.mini-control.is-active {
+  border-color: rgba(54, 211, 153, 0.48);
+  color: #dcfff3;
+  background: rgba(54, 211, 153, 0.12);
 }
 
 .error-box {
@@ -1520,6 +1526,35 @@ body.lobby-only .profile-card .avatar-picker {
   grid-column: 1 / -1;
 }
 
+.table-no-time-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 7px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius);
+  background: rgba(6, 12, 21, 0.42);
+}
+
+.table-no-time-toggle input {
+  width: 16px;
+  height: 16px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--gold);
+}
+
+.table-no-time-toggle span {
+  color: rgba(236, 245, 247, 0.9);
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: none;
+}
+
 .table-time-input {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1723,12 +1758,32 @@ body.lobby-only .profile-card .avatar-picker {
   background: #4f6f8f;
 }
 
-.table-mini-board .mini-white-piece::after,
-.table-mini-board .mini-black-piece::after {
+.table-mini-board .mini-piece {
+  display: grid;
+  place-items: center;
+  font-size: 0;
+}
+
+.table-mini-board .mini-piece::after {
   content: "";
   position: absolute;
-  inset: 24%;
+  z-index: 0;
+  inset: 18%;
   border-radius: 50%;
+}
+
+.table-mini-board .mini-piece::before {
+  content: attr(data-piece);
+  position: relative;
+  z-index: 1;
+  color: currentColor;
+  font-size: 0.42rem;
+  font-weight: 950;
+  line-height: 1;
+}
+
+.table-mini-board .mini-white-piece {
+  color: #132033;
 }
 
 .table-mini-board .mini-white-piece::after {
@@ -1736,9 +1791,17 @@ body.lobby-only .profile-card .avatar-picker {
   box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.18);
 }
 
+.table-mini-board .mini-black-piece {
+  color: #f8fafc;
+}
+
 .table-mini-board .mini-black-piece::after {
   background: #1b2434;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+
+.table-mini-board .mini-open-piece {
+  opacity: 0.48;
 }
 
 .table-info {
@@ -2714,6 +2777,10 @@ body.performance-mode .promotion-choice img {
   .clock-form,
   .profile-form {
     grid-template-columns: 1fr;
+  }
+
+  .quick-settings {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .clock-box strong {

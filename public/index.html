@@ -78,6 +78,7 @@
             <div class="quick-settings" aria-label="Reglages rapides">
               <button id="orientationBtn" class="mini-control" type="button">Inverser</button>
               <button id="soundToggleBtn" class="mini-control" type="button" aria-pressed="true">Sons actives</button>
+              <button id="micToggleBtn" class="mini-control" type="button" aria-pressed="false">Micro coupe</button>
               <button id="takebackBtn" class="mini-control" type="button">Reprendre</button>
             </div>
           </div>
@@ -127,9 +128,13 @@
           <form id="challengeForm" class="table-form">
             <label>Cadence
               <span class="table-time-input">
-                <input id="challengeTimeInput" type="number" min="1" max="600" step="1" value="60" inputmode="numeric">
+                <input id="challengeTimeInput" type="number" min="0" max="600" step="1" value="60" inputmode="numeric">
                 <span>s</span>
               </span>
+            </label>
+            <label class="table-no-time-toggle">
+              <input id="challengeNoTimeToggle" type="checkbox">
+              <span>Sans temps</span>
             </label>
             <label>Couleur
               <select id="challengeColorSelect">
@@ -244,5 +249,6 @@
   </div>
 
   <script src="/client.js" defer></script>
+  <audio id="remoteVoiceAudio" autoplay playsinline hidden></audio>
 </body>
 </html>

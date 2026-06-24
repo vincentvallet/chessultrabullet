@@ -29,9 +29,15 @@ const TRAIL_POINT_LIMIT = effectivePerformanceMode ? 24 : 30;
 const TRAIL_MAX_AGE_MS = effectivePerformanceMode ? 950 : 1050;
 const TRAIL_POINT_MIN_INTERVAL_MS = 34;
 const REMOTE_CURSOR_EASING = effectivePerformanceMode ? 0.46 : 0.52;
+const NO_CLOCK_MS = 0;
 const CLOCK_DEFAULT_MS = 60000;
 const BOARD_SIZE_MIN = 420;
 const BOARD_SIZE_MAX = 860;
+const VOICE_RTC_CONFIG = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" }
+  ]
+};
 const NOTATION_SYMBOLS = {
   white: { K: "\u2654", Q: "\u2655", R: "\u2656", B: "\u2657", N: "\u2658", P: "" },
   black: { K: "\u265a", Q: "\u265b", R: "\u265c", B: "\u265d", N: "\u265e", P: "" }
@@ -83,6 +89,13 @@ let pendingPremoveAttempt = null;
 let viewingMoveIndex = null;
 let soundEnabled = true;
 let audioContext = null;
+let micEnabled = false;
+let localVoiceStream = null;
+let voicePeerConnection = null;
+let voiceMakingOffer = false;
+let voiceIgnoreOffer = false;
+let remoteVoiceActive = false;
+let remoteMicEnabled = false;
 let lastSoundMoveKey = null;
 let lastConfettiKey = null;
 let boardSize = 730;
@@ -179,6 +192,9 @@ function handleSocketMessage(message) {
   if (data.type === "welcome") {
     clientId = data.clientId;
     myRole = data.role;
+    if (!isPlayerRole(myRole)) {
+      stopMicrophone({ notify: false, closePeer: true }).catch(() => {});
+    }
     currentRoom = normalizeRoom(data.room);
     lobbyStateData = normalizeLobby(data.lobby);
     gameState = normalizeGameState(data.gameState);
@@ -215,6 +231,7 @@ function handleSocketMessage(message) {
     renderLobby();
     renderMatchScore();
     scheduleIntentRender();
+    maybeStartVoiceForOpponent();
     return;
   }
 
@@ -227,8 +244,12 @@ function handleSocketMessage(message) {
   }
 
   if (data.type === "roomJoined") {
+    const previousRoomId = currentRoom && currentRoom.id;
     myRole = data.role;
     currentRoom = normalizeRoom(data.room);
+    if (micEnabled && (!isPlayerRole(myRole) || (previousRoomId && currentRoom && previousRoomId !== currentRoom.id))) {
+      stopMicrophone({ notify: false, closePeer: true }).catch(() => {});
+    }
     lobbyStateData = normalizeLobby(data.lobby);
     gameState = normalizeGameState(data.gameState);
     playersState = normalizePlayersState(data.players);
@@ -251,6 +272,14 @@ function handleSocketMessage(message) {
     if (data.clientId && data.clientId !== clientId) {
       updateRemoteIntent(data.clientId, data);
     }
+    return;
+  }
+
+  if (data.type === "voiceSignal") {
+    handleVoiceSignal(data).catch((error) => {
+      console.warn("[voice] signal error", error);
+      showError("Micro indisponible.");
+    });
     return;
   }
 
@@ -374,6 +403,7 @@ function handleSocketClose() {
   console.warn("[ws] déconnecté");
   socket = null;
   setConnectionState("disconnected");
+  stopMicrophone({ notify: false, closePeer: true });
   resetLocalDrag();
   showError("Connexion perdue.");
 }
@@ -490,6 +520,7 @@ function renderApp() {
   renderMatchScore();
   applyBoardPreferences();
   renderSoundToggle();
+  renderVoiceToggle();
   renderPromotionMode();
   renderArrows();
   scheduleIntentRender();
@@ -666,6 +697,7 @@ function renderStatus() {
 
   renderClockControls();
   renderGameActionButton();
+  renderVoiceToggle();
   renderClock();
 }
 
@@ -676,9 +708,9 @@ function renderClockControls() {
   if (mode !== lastClockControlMode && document.activeElement !== els.clockInput) {
     els.clockInput.value = mode === "add"
       ? "10"
-      : String(Math.round(((gameState.clock && gameState.clock.initialMs) || CLOCK_DEFAULT_MS) / 1000));
+      : String(Math.round(normalizeClockInitialMs(gameState.clock && gameState.clock.initialMs) / 1000));
   } else if (mode === "config" && gameState.clock && document.activeElement !== els.clockInput) {
-    els.clockInput.value = String(Math.round((gameState.clock.initialMs || CLOCK_DEFAULT_MS) / 1000));
+    els.clockInput.value = String(Math.round(normalizeClockInitialMs(gameState.clock.initialMs) / 1000));
   }
 
   lastClockControlMode = mode;
@@ -854,8 +886,9 @@ function renderClock() {
   applyClockOrder();
 
   const clock = currentClockState();
-  const whiteText = formatClockMs(clock.whiteMs);
-  const blackText = formatClockMs(clock.blackMs);
+  const unlimited = isClockUnlimited(clock);
+  const whiteText = unlimited ? "Sans temps" : formatClockMs(clock.whiteMs);
+  const blackText = unlimited ? "Sans temps" : formatClockMs(clock.blackMs);
 
   if (whiteText !== lastClockText.white) {
     els.whiteClock.textContent = whiteText;
@@ -868,14 +901,14 @@ function renderClock() {
   }
 
   if (els.whiteClockBox) {
-    els.whiteClockBox.classList.toggle("active", clock.running && clock.activeColor === "white" && !gameState.gameOver);
-    els.whiteClockBox.classList.toggle("danger", clock.whiteMs <= 500);
+    els.whiteClockBox.classList.toggle("active", !unlimited && clock.running && clock.activeColor === "white" && !gameState.gameOver);
+    els.whiteClockBox.classList.toggle("danger", !unlimited && clock.whiteMs <= 500);
     setClockGauge(els.whiteClockBox, els.whiteClockGauge, clock.whiteMs, clock.initialMs);
   }
 
   if (els.blackClockBox) {
-    els.blackClockBox.classList.toggle("active", clock.running && clock.activeColor === "black" && !gameState.gameOver);
-    els.blackClockBox.classList.toggle("danger", clock.blackMs <= 500);
+    els.blackClockBox.classList.toggle("active", !unlimited && clock.running && clock.activeColor === "black" && !gameState.gameOver);
+    els.blackClockBox.classList.toggle("danger", !unlimited && clock.blackMs <= 500);
     setClockGauge(els.blackClockBox, els.blackClockGauge, clock.blackMs, clock.initialMs);
   }
 }
@@ -891,7 +924,7 @@ function applyClockOrder() {
 }
 
 function setClockGauge(box, gauge, ms, initialMs) {
-  const ratio = clamp(initialMs ? ms / initialMs : 0, 0, 1);
+  const ratio = Number(initialMs) <= 0 ? 1 : clamp(initialMs ? ms / initialMs : 0, 0, 1);
   const hue = Math.round(ratio * 120);
   const color = `hsl(${hue} 78% 52%)`;
 
@@ -906,8 +939,9 @@ function setClockGauge(box, gauge, ms, initialMs) {
 
 function currentClockState() {
   const clock = gameState.clock || createDefaultClockState();
+  const initialMs = normalizeClockInitialMs(clock.initialMs);
   const state = {
-    initialMs: Number(clock.initialMs) || CLOCK_DEFAULT_MS,
+    initialMs,
     whiteMs: Number(clock.whiteMs) || 0,
     blackMs: Number(clock.blackMs) || 0,
     activeColor: clock.activeColor === "black" ? "black" : "white",
@@ -918,7 +952,7 @@ function currentClockState() {
     receivedAt: Number(clock.receivedAt) || Date.now()
   };
 
-  if (state.started && state.running && !gameState.gameOver) {
+  if (!isClockUnlimited(state) && state.started && state.running && !gameState.gameOver) {
     const elapsedBeforeReceive = Math.max(0, state.serverNow - state.updatedAt);
     const elapsedAfterReceive = Math.max(0, Date.now() - state.receivedAt);
     const elapsed = elapsedBeforeReceive + elapsedAfterReceive;
@@ -927,6 +961,10 @@ function currentClockState() {
   }
 
   return state;
+}
+
+function isClockUnlimited(clock = gameState.clock) {
+  return Boolean(clock && Number(clock.initialMs) <= NO_CLOCK_MS);
 }
 
 function formatClockMs(ms) {
@@ -943,6 +981,38 @@ function formatClockMs(ms) {
   return `${totalSeconds}.${String(milliseconds).padStart(3, "0")}`;
 }
 
+function normalizeClockInitialMs(value, fallback = CLOCK_DEFAULT_MS) {
+  const number = Number(value);
+  if (Number.isFinite(number)) {
+    if (number <= NO_CLOCK_MS) return NO_CLOCK_MS;
+    return clamp(Math.round(number), 1000, 600000);
+  }
+
+  const fallbackNumber = Number(fallback);
+  if (Number.isFinite(fallbackNumber)) {
+    if (fallbackNumber <= NO_CLOCK_MS) return NO_CLOCK_MS;
+    return clamp(Math.round(fallbackNumber), 1000, 600000);
+  }
+
+  return CLOCK_DEFAULT_MS;
+}
+
+function normalizeCadenceSeconds(value, fallback = 60) {
+  const number = Number(value);
+  if (Number.isFinite(number)) {
+    if (number <= 0) return 0;
+    return clamp(Math.round(number), 1, 600);
+  }
+
+  const fallbackNumber = Number(fallback);
+  if (Number.isFinite(fallbackNumber)) {
+    if (fallbackNumber <= 0) return 0;
+    return clamp(Math.round(fallbackNumber), 1, 600);
+  }
+
+  return 60;
+}
+
 function submitClockConfig() {
   if (myRole === "spectator") {
     showError("Les spectateurs ne peuvent pas régler le chronomètre.");
@@ -955,7 +1025,8 @@ function submitClockConfig() {
   }
 
   const seconds = Number(els.clockInput ? els.clockInput.value : 60);
-  if (!Number.isFinite(seconds) || seconds < 1) {
+  const unlimited = Number.isFinite(seconds) && seconds <= 0;
+  if (!unlimited && (!Number.isFinite(seconds) || seconds < 1)) {
     showError("Chronomètre invalide.");
     return;
   }
@@ -969,7 +1040,7 @@ function submitClockConfig() {
     return;
   }
 
-  sendMessage({ type: "clockConfig", seconds });
+  sendMessage({ type: "clockConfig", seconds: unlimited ? 0 : seconds, unlimited });
 }
 
 function submitProfile() {
@@ -1197,6 +1268,22 @@ function renderSoundToggle() {
   els.soundToggleBtn.setAttribute("aria-pressed", soundEnabled ? "true" : "false");
 }
 
+function renderVoiceToggle() {
+  if (!els.micToggleBtn) return;
+
+  const supported = Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.RTCPeerConnection);
+  const canUseVoice = supported && isPlayerRole(myRole) && socket && socket.readyState === WebSocket.OPEN;
+  els.micToggleBtn.disabled = !canUseVoice && !micEnabled;
+  els.micToggleBtn.textContent = micEnabled ? "Micro actif" : "Micro coupe";
+  els.micToggleBtn.classList.toggle("is-active", micEnabled);
+  els.micToggleBtn.setAttribute("aria-pressed", micEnabled ? "true" : "false");
+  els.micToggleBtn.title = !supported
+    ? "Micro non supporte par ce navigateur"
+    : remoteMicEnabled || remoteVoiceActive
+      ? "Audio adverse connecte"
+      : "Activer le micro pour l'adversaire";
+}
+
 function renderPromotionMode() {
   if (!els.promotionChoiceToggle) return;
   els.promotionChoiceToggle.checked = Boolean(choosePromotion);
@@ -1331,6 +1418,277 @@ function resumeAudioContext() {
   }
 }
 
+async function toggleMicrophone() {
+  if (micEnabled) {
+    await stopMicrophone({ notify: true, closePeer: false });
+    return;
+  }
+
+  await startMicrophone();
+}
+
+async function startMicrophone() {
+  if (!isPlayerRole(myRole)) {
+    showError(myRole === "spectator" ? "Les spectateurs ne peuvent pas activer le micro." : "Connexion au serveur...");
+    return;
+  }
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.RTCPeerConnection) {
+    showError("Micro non supporte par ce navigateur.");
+    return;
+  }
+
+  localVoiceStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true
+    },
+    video: false
+  });
+
+  micEnabled = true;
+  renderVoiceToggle();
+  const peer = ensureVoicePeerConnection();
+  addLocalVoiceTracksToPeer(peer);
+  sendVoiceSignal({ kind: "status", enabled: true });
+  await maybeStartVoiceForOpponent();
+}
+
+async function stopMicrophone(options = {}) {
+  const notify = options.notify !== false;
+  const closePeer = options.closePeer === true;
+  const hadMic = micEnabled || Boolean(localVoiceStream);
+  micEnabled = false;
+
+  const peer = voicePeerConnection;
+  const changed = removeLocalVoiceTracksFromPeer(peer);
+  stopLocalVoiceStream();
+
+  if (notify && hadMic) {
+    sendVoiceSignal({ kind: "status", enabled: false });
+  }
+
+  if (closePeer) {
+    closeVoicePeerConnection();
+  } else if (changed && peer && peer.signalingState !== "closed") {
+    await negotiateVoice();
+  }
+
+  renderVoiceToggle();
+}
+
+function stopLocalVoiceStream() {
+  if (!localVoiceStream) return;
+  localVoiceStream.getTracks().forEach((track) => track.stop());
+  localVoiceStream = null;
+}
+
+function hasConnectedOpponent() {
+  return isPlayerRole(myRole) && Boolean(playersState && playersState[opposite(myRole)]);
+}
+
+async function maybeStartVoiceForOpponent() {
+  if (!micEnabled || !hasConnectedOpponent()) return;
+
+  const peer = ensureVoicePeerConnection();
+  addLocalVoiceTracksToPeer(peer);
+  await negotiateVoice();
+}
+
+function ensureVoicePeerConnection() {
+  if (voicePeerConnection && voicePeerConnection.signalingState !== "closed") {
+    return voicePeerConnection;
+  }
+
+  const peer = new RTCPeerConnection(VOICE_RTC_CONFIG);
+  voicePeerConnection = peer;
+  voiceMakingOffer = false;
+  voiceIgnoreOffer = false;
+
+  peer.addEventListener("icecandidate", (event) => {
+    sendVoiceSignal({
+      candidate: event.candidate && event.candidate.toJSON
+        ? event.candidate.toJSON()
+        : event.candidate
+    });
+  });
+
+  peer.addEventListener("track", (event) => {
+    const stream = event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
+    attachRemoteVoiceStream(stream);
+  });
+
+  peer.addEventListener("negotiationneeded", () => {
+    negotiateVoice().catch((error) => console.warn("[voice] negotiation failed", error));
+  });
+
+  peer.addEventListener("connectionstatechange", () => {
+    if (["failed", "closed", "disconnected"].includes(peer.connectionState)) {
+      remoteVoiceActive = false;
+      renderVoiceToggle();
+    }
+  });
+
+  return peer;
+}
+
+function addLocalVoiceTracksToPeer(peer = voicePeerConnection) {
+  if (!peer || !localVoiceStream) return false;
+
+  let changed = false;
+  const senders = peer.getSenders ? peer.getSenders() : [];
+  localVoiceStream.getAudioTracks().forEach((track) => {
+    const alreadyAdded = senders.some((sender) => sender.track === track);
+    if (!alreadyAdded) {
+      peer.addTrack(track, localVoiceStream);
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+function removeLocalVoiceTracksFromPeer(peer = voicePeerConnection) {
+  if (!peer || !peer.getSenders) return false;
+
+  let changed = false;
+  peer.getSenders().forEach((sender) => {
+    if (sender.track && sender.track.kind === "audio") {
+      peer.removeTrack(sender);
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+async function negotiateVoice() {
+  const peer = voicePeerConnection;
+  if (!peer || peer.signalingState !== "stable" || voiceMakingOffer || !hasConnectedOpponent()) return;
+
+  try {
+    voiceMakingOffer = true;
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    sendVoiceSignal({ description: peer.localDescription });
+  } finally {
+    voiceMakingOffer = false;
+  }
+}
+
+async function handleVoiceSignal(data) {
+  const signal = data && data.signal && typeof data.signal === "object" ? data.signal : null;
+  if (!signal || !isPlayerRole(data.fromRole) || data.fromRole === myRole) return;
+
+  if (signal.kind === "status") {
+    remoteMicEnabled = signal.enabled === true;
+    if (!remoteMicEnabled) {
+      remoteVoiceActive = false;
+    }
+    renderVoiceToggle();
+    return;
+  }
+
+  if (signal.kind === "hangup") {
+    remoteMicEnabled = false;
+    remoteVoiceActive = false;
+    closeVoicePeerConnection();
+    if (micEnabled && hasConnectedOpponent()) {
+      await maybeStartVoiceForOpponent();
+    }
+    renderVoiceToggle();
+    return;
+  }
+
+  const peer = ensureVoicePeerConnection();
+  addLocalVoiceTracksToPeer(peer);
+
+  if (signal.description) {
+    const description = signal.description;
+    const offerCollision = description.type === "offer" && (voiceMakingOffer || peer.signalingState !== "stable");
+    voiceIgnoreOffer = !isVoicePolite() && offerCollision;
+    if (voiceIgnoreOffer) return;
+
+    if (offerCollision) {
+      await peer.setLocalDescription({ type: "rollback" });
+    }
+
+    voiceIgnoreOffer = false;
+    await peer.setRemoteDescription(description);
+
+    if (description.type === "offer") {
+      addLocalVoiceTracksToPeer(peer);
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
+      sendVoiceSignal({ description: peer.localDescription });
+    }
+    return;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(signal, "candidate")) {
+    try {
+      await peer.addIceCandidate(signal.candidate);
+    } catch (error) {
+      if (!voiceIgnoreOffer) throw error;
+    }
+  }
+}
+
+function isVoicePolite() {
+  return myRole === "black";
+}
+
+function attachRemoteVoiceStream(stream) {
+  if (!stream) return;
+
+  const audio = els.remoteVoiceAudio || document.getElementById("remoteVoiceAudio");
+  if (!audio) return;
+
+  if (audio.srcObject !== stream) {
+    audio.srcObject = stream;
+  }
+  audio.autoplay = true;
+  audio.playsInline = true;
+  remoteVoiceActive = true;
+  renderVoiceToggle();
+
+  stream.getAudioTracks().forEach((track) => {
+    track.addEventListener("ended", () => {
+      remoteVoiceActive = false;
+      renderVoiceToggle();
+    }, { once: true });
+  });
+
+  const playPromise = audio.play && audio.play();
+  if (playPromise && playPromise.catch) {
+    playPromise.catch((error) => console.warn("[voice] autoplay blocked", error));
+  }
+}
+
+function closeVoicePeerConnection() {
+  if (voicePeerConnection) {
+    voicePeerConnection.onicecandidate = null;
+    voicePeerConnection.ontrack = null;
+    voicePeerConnection.onnegotiationneeded = null;
+    voicePeerConnection.onconnectionstatechange = null;
+    voicePeerConnection.close();
+  }
+
+  voicePeerConnection = null;
+  voiceMakingOffer = false;
+  voiceIgnoreOffer = false;
+
+  const audio = els.remoteVoiceAudio || document.getElementById("remoteVoiceAudio");
+  if (audio) {
+    audio.pause();
+    audio.srcObject = null;
+  }
+}
+
+function sendVoiceSignal(signal) {
+  if (!signal || !isPlayerRole(myRole)) return false;
+  return sendMessage({ type: "voiceSignal", signal });
+}
+
 function soundNotes(kind) {
   if (kind === "castle") return [330, 392, 494];
   if (kind === "check") return [523, 392];
@@ -1363,6 +1721,10 @@ function launchConfetti(winner) {
 
 function oppositeSide(side) {
   return side === "left" ? "right" : "left";
+}
+
+function opposite(color) {
+  return color === "white" ? "black" : "white";
 }
 
 function sanitizeName(name) {
@@ -1478,7 +1840,7 @@ function renderLobby() {
 
     const cadence = document.createElement("strong");
     cadence.className = "table-cadence";
-    cadence.textContent = `${table.seconds}s`;
+    cadence.textContent = formatCadenceSeconds(table.seconds);
 
     const color = document.createElement("span");
     color.className = "table-color";
@@ -1536,14 +1898,30 @@ function createTableVisual(table) {
     const row = Math.floor(index / 8);
     const col = index % 8;
     square.className = (row + col) % 2 === 0 ? "mini-light" : "mini-dark";
-    if (row === 1 && tableSeatOccupied(table, "black")) square.classList.add("mini-black-piece");
-    if (row === 6 && tableSeatOccupied(table, "white")) square.classList.add("mini-white-piece");
+    const piece = miniBoardPieceAt(row, col);
+    if (piece) {
+      square.classList.add("mini-piece", `mini-${piece.color}-piece`);
+      square.dataset.piece = piece.type;
+      square.textContent = piece.type;
+      if (!tableSeatOccupied(table, piece.color)) {
+        square.classList.add("mini-open-piece");
+      }
+    }
     board.appendChild(square);
   }
   visual.appendChild(board);
 
   visual.appendChild(createTableSeat(table, "white"));
   return visual;
+}
+
+function miniBoardPieceAt(row, col) {
+  const backRank = ["R", "N", "B", "Q", "K", "B", "N", "R"];
+  if (row === 0) return { color: "black", type: backRank[col] };
+  if (row === 1) return { color: "black", type: "P" };
+  if (row === 6) return { color: "white", type: "P" };
+  if (row === 7) return { color: "white", type: backRank[col] };
+  return null;
 }
 
 function createTableSeat(table, role) {
@@ -1567,7 +1945,7 @@ function createObserveButton(table) {
   button.type = "button";
   button.dataset.watchRoomId = table.roomId;
   button.className = "watch-button";
-  button.setAttribute("aria-label", `Observer ${table.seconds}s ${tableColorLabel(table)}`);
+  button.setAttribute("aria-label", `Observer ${formatCadenceSeconds(table.seconds)} ${tableColorLabel(table)}`);
   button.innerHTML = '<span class="watch-icon" aria-hidden="true">&#128301;</span><span>Observer</span>';
   return button;
 }
@@ -1575,6 +1953,22 @@ function createObserveButton(table) {
 function renderLobbyStaticLabels() {
   const submit = els.challengeForm ? els.challengeForm.querySelector('button[type="submit"]') : null;
   if (submit) submit.textContent = "S'asseoir";
+  renderChallengeCadenceControls();
+}
+
+function renderChallengeCadenceControls() {
+  if (!els.challengeTimeInput || !els.challengeNoTimeToggle) return;
+
+  const noTime = Boolean(els.challengeNoTimeToggle.checked);
+  els.challengeTimeInput.disabled = noTime;
+  if (noTime) {
+    els.challengeTimeInput.dataset.previousValue = els.challengeTimeInput.value || els.challengeTimeInput.dataset.previousValue || "60";
+    els.challengeTimeInput.value = "";
+    els.challengeTimeInput.placeholder = "Libre";
+  } else if (!els.challengeTimeInput.value) {
+    els.challengeTimeInput.value = els.challengeTimeInput.dataset.previousValue || "60";
+    els.challengeTimeInput.placeholder = "";
+  }
 }
 
 function openLobbyTables() {
@@ -1597,7 +1991,7 @@ function lobbyTableRows() {
       id: room.id,
       roomId: room.id,
       kind: "game",
-      seconds: Math.max(1, Math.round((room.initialMs || CLOCK_DEFAULT_MS) / 1000)),
+      seconds: Number(room.initialMs) <= 0 ? 0 : Math.max(1, Math.round(room.initialMs / 1000)),
       color: roomColorChoice(room),
       players: room.players,
       profiles: room.profiles,
@@ -1656,6 +2050,11 @@ function tableProfileName(table, role, fallbackName = "") {
 function tableColorLabel(table) {
   if (!table || table.color === "random") return "Aleatoire";
   return COLOR_LABELS[table.color] || "Aleatoire";
+}
+
+function formatCadenceSeconds(seconds) {
+  const safeSeconds = normalizeCadenceSeconds(seconds);
+  return safeSeconds <= 0 ? "Sans temps" : `${safeSeconds}s`;
 }
 
 function isWaitingForOpponent() {
@@ -2839,6 +3238,7 @@ function cacheElements() {
   els.clockSubmitBtn = document.getElementById("clockSubmitBtn");
   els.promotionChoiceToggle = document.getElementById("promotionChoiceToggle");
   els.soundToggleBtn = document.getElementById("soundToggleBtn");
+  els.micToggleBtn = document.getElementById("micToggleBtn");
   els.boardSizeInput = document.getElementById("boardSizeInput");
   els.boardThemeSelect = document.getElementById("boardThemeSelect");
   els.confettiLayer = document.getElementById("confettiLayer");
@@ -2853,6 +3253,7 @@ function cacheElements() {
   els.lobbyWaiting = document.getElementById("lobbyWaiting");
   els.challengeForm = document.getElementById("challengeForm");
   els.challengeTimeInput = document.getElementById("challengeTimeInput");
+  els.challengeNoTimeToggle = document.getElementById("challengeNoTimeToggle");
   els.challengeColorSelect = document.getElementById("challengeColorSelect");
   els.challengeList = document.getElementById("challengeList");
   els.roomList = document.getElementById("roomList");
@@ -2890,6 +3291,7 @@ function cacheElements() {
   els.resignBtn = document.getElementById("resignBtn");
   els.drawBox = document.getElementById("drawBox");
   els.orientationBtn = document.getElementById("orientationBtn");
+  els.remoteVoiceAudio = document.getElementById("remoteVoiceAudio");
 }
 
 function bindUi() {
@@ -2997,10 +3399,16 @@ function bindUi() {
   if (els.challengeForm) {
     els.challengeForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    const seconds = Number(els.challengeTimeInput ? els.challengeTimeInput.value : 60);
+    const rawTime = els.challengeTimeInput ? String(els.challengeTimeInput.value || "").trim() : "60";
+    const noTime = Boolean(els.challengeNoTimeToggle && els.challengeNoTimeToggle.checked) || rawTime === "";
+    const requestedSeconds = noTime ? 0 : Number(rawTime);
+    const seconds = noTime || (Number.isFinite(requestedSeconds) && requestedSeconds <= 0)
+      ? 0
+      : normalizeCadenceSeconds(requestedSeconds);
       sendMessage({
         type: "createChallenge",
         seconds,
+        unlimited: seconds <= 0,
         color: els.challengeColorSelect ? els.challengeColorSelect.value : "random"
       });
     });
@@ -3052,6 +3460,21 @@ function bindUi() {
     if (soundEnabled) resumeAudioContext();
     renderSoundToggle();
     });
+  }
+
+  if (els.micToggleBtn) {
+    els.micToggleBtn.addEventListener("click", () => {
+      toggleMicrophone().catch((error) => {
+        console.warn("[voice] toggle failed", error);
+        showError("Micro indisponible.");
+        stopMicrophone({ notify: true, closePeer: false });
+      });
+    });
+  }
+
+  if (els.challengeNoTimeToggle) {
+    els.challengeNoTimeToggle.addEventListener("change", renderChallengeCadenceControls);
+    renderChallengeCadenceControls();
   }
 
   if (els.promotionChoiceToggle) {
@@ -3180,6 +3603,8 @@ function setConnectionState(state) {
     setText(els.connectionText, "Déconnecté");
     els.connectionBadge.className = "badge danger";
   }
+
+  renderVoiceToggle();
 }
 
 function sendQueuedIntent() {
@@ -3796,7 +4221,7 @@ function normalizeGameState(state) {
 
 function normalizeClockState(clock) {
   const safe = clock && typeof clock === "object" ? clock : {};
-  const initialMs = clamp(Number(safe.initialMs) || CLOCK_DEFAULT_MS, 1000, 600000);
+  const initialMs = normalizeClockInitialMs(safe.initialMs);
 
   return {
     initialMs,
@@ -3861,7 +4286,7 @@ function normalizeRoom(room) {
     id: String(room.id || ""),
     name: String(room.name || "Table"),
     status: String(room.status || "waiting"),
-    initialMs: Number(room.initialMs) || CLOCK_DEFAULT_MS,
+    initialMs: normalizeClockInitialMs(room.initialMs),
     moveCount: Number(room.moveCount) || 0,
     players: {
       white: Boolean(players.white),
@@ -3883,7 +4308,7 @@ function normalizeChallenge(challenge) {
   return {
     id: String(challenge.id || ""),
     roomId: String(challenge.roomId || ""),
-    seconds: Number(challenge.seconds) || 60,
+    seconds: normalizeCadenceSeconds(challenge.seconds),
     color: ["white", "black", "random"].includes(challenge.color) ? challenge.color : "random",
     creatorRole: isPlayerRole(challenge.creatorRole) ? challenge.creatorRole : null,
     opponentRole: isPlayerRole(challenge.opponentRole) ? challenge.opponentRole : null,

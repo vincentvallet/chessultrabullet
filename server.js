@@ -15,6 +15,7 @@ const PROMOTION_TYPES = new Set(["Q", "R", "B", "N"]);
 const CHAT_HISTORY_LIMIT = 80;
 const CHAT_TEXT_MAX = 240;
 const PLAYER_NAME_MAX = 20;
+const NO_CLOCK_MS = 0;
 const DEFAULT_CLOCK_MS = 60000;
 const MIN_CLOCK_MS = 1000;
 const MAX_CLOCK_MS = 600000;
@@ -178,6 +179,11 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (message.type === "voiceSignal") {
+      handleVoiceSignal(client, message);
+      return;
+    }
+
     if (message.type === "reset") {
       if (client.role === "spectator") {
         send(client, {
@@ -307,14 +313,15 @@ function createGameState(initialMs = DEFAULT_CLOCK_MS) {
 }
 
 function createRoom(options = {}) {
+  const initialMs = normalizeInitialClockMs(options.initialMs, DEFAULT_CLOCK_MS);
   const room = {
     id: String(options.id || createClientId()),
     name: String(options.name || "Table").slice(0, 40),
     status: options.status || "waiting",
-    initialMs: clampNumber(options.initialMs || DEFAULT_CLOCK_MS, MIN_CLOCK_MS, MAX_CLOCK_MS, DEFAULT_CLOCK_MS),
+    initialMs,
     createdAt: Date.now(),
     clients: new Set(),
-    gameState: createGameState(options.initialMs || DEFAULT_CLOCK_MS),
+    gameState: createGameState(initialMs),
     positionCounts: new Map(),
     chatMessages: [],
     arrows: [],
@@ -476,6 +483,9 @@ function joinRoom(client, roomId, options = {}) {
       if (drawCleared) drawOffer = null;
       const readyChanged = clearReadyForRole(previousRole);
       const clockChanged = syncClockRunningState();
+      if (isPlayerRole(previousRole)) {
+        broadcast({ type: "voiceSignal", fromClientId: client.id, fromRole: previousRole, signal: { kind: "hangup" } });
+      }
       broadcast({ type: "players", players: getPlayersState() });
       broadcastArrows();
       if (takebackCleared) {
@@ -547,11 +557,14 @@ function broadcastLobby() {
 function handleCreateChallenge(client, message) {
   if (!client) return;
 
-  const seconds = clampNumber(Number(message.seconds) || 60, 1, 600, 60);
+  const requestedSeconds = Number(message.seconds);
+  const unlimited = message.unlimited === true || (Number.isFinite(requestedSeconds) && requestedSeconds <= 0);
+  const seconds = unlimited ? 0 : clampNumber(requestedSeconds || 60, 1, 600, 60);
   const colorChoice = ["white", "black", "random"].includes(message.color) ? message.color : "random";
+  const clockLabel = unlimited ? "Sans temps" : `${seconds}s`;
   const room = createRoom({
-    name: `${seconds}s ${colorChoice === "random" ? "aleatoire" : colorChoice}`,
-    initialMs: seconds * 1000,
+    name: `${clockLabel} ${colorChoice === "random" ? "aleatoire" : colorChoice}`,
+    initialMs: unlimited ? NO_CLOCK_MS : seconds * 1000,
     status: "waiting"
   });
   rooms.set(room.id, room);
@@ -743,7 +756,7 @@ function createInitialCastlingRights() {
 }
 
 function createInitialClock(initialMs = DEFAULT_CLOCK_MS) {
-  const safeInitialMs = clampNumber(initialMs, MIN_CLOCK_MS, MAX_CLOCK_MS, DEFAULT_CLOCK_MS);
+  const safeInitialMs = normalizeInitialClockMs(initialMs, DEFAULT_CLOCK_MS);
 
   return {
     initialMs: safeInitialMs,
@@ -754,6 +767,26 @@ function createInitialClock(initialMs = DEFAULT_CLOCK_MS) {
     running: false,
     updatedAt: Date.now()
   };
+}
+
+function normalizeInitialClockMs(value, fallback = DEFAULT_CLOCK_MS) {
+  const number = Number(value);
+  if (Number.isFinite(number)) {
+    if (number <= 0) return NO_CLOCK_MS;
+    return clampNumber(Math.round(number), MIN_CLOCK_MS, MAX_CLOCK_MS, DEFAULT_CLOCK_MS);
+  }
+
+  const fallbackNumber = Number(fallback);
+  if (Number.isFinite(fallbackNumber)) {
+    if (fallbackNumber <= 0) return NO_CLOCK_MS;
+    return clampNumber(Math.round(fallbackNumber), MIN_CLOCK_MS, MAX_CLOCK_MS, DEFAULT_CLOCK_MS);
+  }
+
+  return DEFAULT_CLOCK_MS;
+}
+
+function isClockUnlimited(clock = gameState.clock) {
+  return Boolean(clock && Number(clock.initialMs) <= 0);
 }
 
 function createInitialReadyState() {
@@ -865,7 +898,7 @@ function projectClock(now = Date.now()) {
     updatedAt: clock.updatedAt || now
   };
 
-  if (projected.running && !gameState.gameOver) {
+  if (projected.running && !isClockUnlimited(clock) && !gameState.gameOver) {
     const elapsed = Math.max(0, now - projected.updatedAt);
     projected[`${projected.activeColor}Ms`] = Math.max(0, projected[`${projected.activeColor}Ms`] - elapsed);
   }
@@ -899,6 +932,12 @@ function updateClockNow(detectTimeout = false) {
   const now = Date.now();
   const clock = gameState.clock;
   let changed = false;
+
+  if (isClockUnlimited(clock)) {
+    clock.running = false;
+    clock.updatedAt = now;
+    return false;
+  }
 
   if (clock.running && !gameState.gameOver) {
     const elapsed = Math.max(0, now - clock.updatedAt);
@@ -938,6 +977,7 @@ function syncClockRunningState(now = Date.now()) {
   updateClockNow(false);
 
   const shouldRun = Boolean(gameState.clock.started)
+    && !isClockUnlimited(gameState.clock)
     && !gameState.gameOver
     && hasConnectedRole("white")
     && hasConnectedRole("black");
@@ -1034,7 +1074,10 @@ function updateStartCountdown(now = Date.now()) {
   }
 
   gameState.clock.started = true;
-  gameState.clock.running = !gameState.gameOver && hasConnectedRole("white") && hasConnectedRole("black");
+  gameState.clock.running = !isClockUnlimited(gameState.clock)
+    && !gameState.gameOver
+    && hasConnectedRole("white")
+    && hasConnectedRole("black");
   gameState.clock.activeColor = "white";
   gameState.clock.updatedAt = now;
   gameState.turn = "white";
@@ -1080,12 +1123,15 @@ function handleClockConfig(client, message) {
   }
 
   const seconds = Number(message.seconds);
-  if (!Number.isFinite(seconds)) {
+  const unlimited = message.unlimited === true || (Number.isFinite(seconds) && seconds <= 0);
+  if (!unlimited && !Number.isFinite(seconds)) {
     send(client, { type: "error", message: "Chronomètre invalide." });
     return;
   }
 
-  const initialMs = clampNumber(Math.round(seconds * 1000), MIN_CLOCK_MS, MAX_CLOCK_MS, DEFAULT_CLOCK_MS);
+  const initialMs = unlimited
+    ? NO_CLOCK_MS
+    : clampNumber(Math.round(seconds * 1000), MIN_CLOCK_MS, MAX_CLOCK_MS, DEFAULT_CLOCK_MS);
   clearReadyStates();
   resetClock(initialMs);
   gameState.clock.started = false;
@@ -1107,6 +1153,11 @@ function handleAddTime(client, message) {
 
   if (gameState.gameOver) {
     send(client, { type: "error", message: "La partie est terminee." });
+    return;
+  }
+
+  if (isClockUnlimited(gameState.clock)) {
+    send(client, { type: "error", message: "Cadence sans temps." });
     return;
   }
 
@@ -2108,6 +2159,9 @@ function cleanupClient(clientId) {
       const clockChanged = syncClockRunningState();
       console.log(`[ws] client disconnected ${client.id} (${role}) from ${room.id}`);
 
+      if (isPlayerRole(role)) {
+        broadcast({ type: "voiceSignal", fromClientId: client.id, fromRole: role, signal: { kind: "hangup" } });
+      }
       broadcast({ type: "players", players: getPlayersState() });
       broadcastArrows();
       if (takebackCleared) {
@@ -2216,6 +2270,73 @@ function handleChat(client, message) {
   }
 
   broadcast({ type: "chat", message: cloneChatMessage(chatMessage) });
+}
+
+function handleVoiceSignal(client, message) {
+  if (!client || !isPlayerRole(client.role)) {
+    send(client, { type: "error", message: "Les spectateurs ne peuvent pas activer le micro." });
+    return;
+  }
+
+  const signal = sanitizeVoiceSignal(message.signal);
+  if (!signal) return;
+
+  const targetRole = opposite(client.role);
+  const target = scopedClients().find((candidate) => candidate.role === targetRole);
+  if (!target) return;
+
+  send(target, {
+    type: "voiceSignal",
+    fromClientId: client.id,
+    fromRole: client.role,
+    signal
+  });
+}
+
+function sanitizeVoiceSignal(signal) {
+  if (!signal || typeof signal !== "object") return null;
+
+  if (signal.kind === "hangup") {
+    return { kind: "hangup" };
+  }
+
+  if (signal.kind === "status") {
+    return { kind: "status", enabled: signal.enabled === true };
+  }
+
+  if (signal.description && typeof signal.description === "object") {
+    const type = signal.description.type === "answer" ? "answer" : signal.description.type === "offer" ? "offer" : "";
+    const sdp = typeof signal.description.sdp === "string" ? signal.description.sdp : "";
+    if (!type || !sdp) return null;
+    return {
+      description: {
+        type,
+        sdp: sdp.slice(0, 60000)
+      }
+    };
+  }
+
+  if (Object.prototype.hasOwnProperty.call(signal, "candidate")) {
+    if (signal.candidate === null) {
+      return { candidate: null };
+    }
+
+    const candidate = signal.candidate && typeof signal.candidate === "object" ? signal.candidate : null;
+    if (!candidate) return null;
+
+    return {
+      candidate: {
+        candidate: String(candidate.candidate || "").slice(0, 4096),
+        sdpMid: candidate.sdpMid === null || candidate.sdpMid === undefined ? null : String(candidate.sdpMid).slice(0, 64),
+        sdpMLineIndex: Number.isFinite(Number(candidate.sdpMLineIndex)) ? Number(candidate.sdpMLineIndex) : null,
+        usernameFragment: candidate.usernameFragment === null || candidate.usernameFragment === undefined
+          ? null
+          : String(candidate.usernameFragment).slice(0, 256)
+      }
+    };
+  }
+
+  return null;
 }
 
 function handleArrow(client, message) {
