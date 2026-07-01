@@ -557,7 +557,7 @@ function renderBoard() {
 
   displaySquares.forEach((squareName, index) => {
     const square = document.createElement("div");
-    square.className = `square ${squareShade(squareName)}`;
+    square.className = `square ${squareShade(index)}`;
     square.dataset.square = squareName;
     square.setAttribute("role", "gridcell");
     square.setAttribute("aria-label", squareName);
@@ -4193,10 +4193,10 @@ function positionToSquare(file, rank) {
   return `${FILES[file - 1]}${rank}`;
 }
 
-function squareShade(square) {
-  const fileIndex = FILES.indexOf(square[0]);
-  const rank = Number(square.slice(1));
-  return (fileIndex + rank) % 2 === 0 ? "dark" : "light";
+function squareShade(index) {
+  const row = Math.floor(index / 8);
+  const col = index % 8;
+  return (row + col) % 2 === 0 ? "light" : "dark";
 }
 
 function normalizeGameState(state) {
